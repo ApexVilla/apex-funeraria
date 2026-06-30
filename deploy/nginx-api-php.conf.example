@@ -1,22 +1,37 @@
 # Exemplo: proxy da API PHP no MESMO domínio do frontend (evita CORS e erro "HTML da SPA").
 # Ajuste server_name, root e upstream conforme seu servidor.
+#
+# Produção funeraria.apexvilla.com.br (Contabo EU): sem gzip/cache o primeiro acesso
+# baixa ~1,5 MB de JS/CSS. Com gzip cai para ~400 KB — crítico em internet lenta.
+# Cloudflare (plano grátis) melhora latência no Brasil e evita timeout se o VPS oscilar.
 
 upstream apex_php_api {
     server 127.0.0.1:8080;
+    keepalive 16;
 }
 
 server {
     listen 443 ssl http2;
-    server_name app.exemplo.com.br;
+    server_name funeraria.apexvilla.com.br;
 
     root /var/www/apex-funeraria/dist;
     index index.html;
 
-    # Gzip — reduz bastante o tempo em conexões lentas (Wi‑Fi fraco / 3G).
+    # Timeouts — evita conexões penduradas que esgotam workers do nginx.
+    keepalive_timeout 65;
+    client_body_timeout 30s;
+    send_timeout 30s;
+
+    ssl_session_cache shared:SSL:10m;
+    ssl_session_timeout 1d;
+
+    # Gzip — OBRIGATÓRIO em produção (Wi‑Fi fraco / 3G / links no interior).
     gzip on;
     gzip_vary on;
+    gzip_comp_level 5;
     gzip_min_length 256;
-    gzip_types text/plain text/css application/javascript application/json image/svg+xml;
+    gzip_proxied any;
+    gzip_types text/plain text/css application/javascript application/json image/svg+xml font/woff2;
 
     # Chunks com hash no nome: cache longo e NUNCA fallback para index.html.
     # Sem isso, após um deploy o nginx devolve HTML (MIME text/html) para .js antigo
@@ -40,11 +55,21 @@ server {
     location ~ ^/(health|auth|dashboard|cobranca|cobradores|frota)(/|$) {
         proxy_pass http://apex_php_api;
         proxy_http_version 1.1;
+        proxy_set_header Connection "";
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_set_header Authorization $http_authorization;
         proxy_set_header X-Empresa-Id $http_x_empresa_id;
+        proxy_connect_timeout 10s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 60s;
     }
 }
+
+# Diagnóstico rápido no VPS (SSH):
+#   systemctl is-active nginx && curl -sI -H 'Accept-Encoding: gzip' https://127.0.0.1/ -k | grep -iE 'http|encoding|cache'
+#   free -h && df -h / && ss -s
+#   ufw status && fail2ban-client status 2>/dev/null
+#   journalctl -u nginx --since '1 hour ago' --no-pager | tail -30
