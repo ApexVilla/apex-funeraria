@@ -11,11 +11,15 @@ import { useEmpresaIdsOperacao } from '../../lib/useEmpresaIdsOperacao';
 import {
   canEditarFolhaPonto,
   canVerEspelhoPontoTodosColaboradores,
+  calcularTrabalhadoMinutosColaborador,
   diaFechadoParaSaldoMensal,
   getUserPontoConfig,
+  INTERVALO_ALMOCO_IMPLICITO_ENTRADA_SAIDA_MINUTOS,
+  intervaloAlmocoImplicitoMinutosNoDia,
   jornadaPontoFinalizada,
   labelRegimePonto,
   normalizarBatidasAfdDia,
+  normalizarBatidasEntradaSaida,
   usaPontoApenasEntradaSaida,
 } from '../../lib/pontoRules';
 import {
@@ -48,9 +52,8 @@ import {
   type BatidaPonto,
   type TipoBatida,
   batidaEhAjusteManual,
-  batidasDoTipo,
   batidaEmDiaPosterior,
-  calcularTrabalhadoMinutos,
+  batidasDoTipo,
   consolidarEPrepararBatidasEspelho,
   diaLocalFromTimestamp,
   formatarDuracaoPonto,
@@ -64,13 +67,18 @@ import { EditarDiaPontoModal } from './EditarDiaPontoModal';
 import {
   isDiaAtestado,
   isDiaFolgaManual,
+  isDiaBonificado,
   isDiaJustificadoPorOcorrencia,
   mapaOcorrenciasPorDia,
   type PontoDiaOcorrencia,
 } from '../../lib/pontoDiaOcorrencia';
 import { listarOcorrenciasDiaPonto } from '../../lib/pontoAdminService';
 import { opcoesConsolidacaoJornadaMultidia } from '../../lib/ponto12x36Catalao';
-import { Calendar, ChevronLeft, ChevronRight, Coffee, LogIn, LogOut, Pencil, Printer, RefreshCw, User, Camera, Search, Check, ChevronsUpDown } from 'lucide-react';
+import { ordenarCargosPorHierarquia } from '../../lib/userRoles';
+import { baixarPdfFolhaPonto, slugArquivoFolhaPonto, tituloJanelaFolhaPonto } from '../../lib/folhaPontoPdf';
+import { resolveLogoUrl } from '../../lib/fenixLogo';
+import { APEX_PLAN_NAME, APEX_PLAN_TAGLINE } from '../../lib/apexBranding';
+import { Calendar, ChevronLeft, ChevronRight, Coffee, Download, LogIn, LogOut, Pencil, Printer, RefreshCw, User, Camera, Search, Check, ChevronsUpDown } from 'lucide-react';
 import { useToast } from '../../lib/ToastStore';
 import {
   ResponsiveContainer,
@@ -120,8 +128,38 @@ interface PontoEspelhoProps {
   modoRH?: boolean;
 }
 
+const DEFAULT_ROLE_OPTIONS = [
+  { value: 'atendente', label: 'Atendente' },
+  { value: 'vendedor', label: 'Vendedor' },
+  { value: 'cobrador', label: 'Cobrador' },
+  { value: 'motorista', label: 'Motorista' },
+  { value: 'agente_funerario', label: 'Agente Funerário' },
+  { value: 'estoquista', label: 'Estoquista' },
+  { value: 'recepcao', label: 'Recepção' },
+  { value: 'auxiliar_servicos_gerais', label: 'Auxiliar de Serviços Gerais' },
+  { value: 'rh', label: 'Recursos Humanos (RH)' },
+  { value: 'financeiro', label: 'Financeiro' },
+  { value: 'supervisao', label: 'Supervisor' },
+  { value: 'gerente', label: 'Gerente' },
+  { value: 'gestor', label: 'Gestor' },
+  { value: 'diretoria', label: 'Diretoria' },
+  { value: 'gestao_executiva', label: 'Gestão Executiva' },
+  { value: 'admin', label: 'Administrador' },
+];
+
+function labelCargoColaborador(
+  role: string | undefined | null,
+  roleOptions: ReadonlyArray<{ value: string; label: string }>,
+): string {
+  const codigo = (role || '').trim();
+  if (!codigo) return '—';
+  const encontrado = roleOptions.find((o) => o.value === codigo)?.label;
+  if (encontrado) return encontrado;
+  return codigo.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 export const PontoEspelho: React.FC<PontoEspelhoProps> = ({ modoRH = false }) => {
-  const { user } = useAuth();
+  const { user, empresa } = useAuth();
   const { showToast } = useToast();
   const { empresaIdsFiltro, empresaIdOperacao, aguardandoContexto, dataRevisionEmpresa, empresaNomePorId } =
     useEmpresaIdsOperacao();
@@ -143,6 +181,28 @@ export const PontoEspelho: React.FC<PontoEspelhoProps> = ({ modoRH = false }) =>
   const [loading, setLoading] = useState(false);
   const [buscaColab, setBuscaColab] = useState('');
   const [showColabDropdown, setShowColabDropdown] = useState(false);
+  const [gerandoPdf, setGerandoPdf] = useState(false);
+  const [logoUrlEmpresaFolha, setLogoUrlEmpresaFolha] = useState<string | null>(null);
+  const [roleOptions, setRoleOptions] = useState(DEFAULT_ROLE_OPTIONS);
+
+  useEffect(() => {
+    const loadCargos = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('user_roles')
+          .select('codigo, nome, ativo')
+          .eq('ativo', true);
+        if (error) throw error;
+        if (data && data.length > 0) {
+          const formatted = data.map((d) => ({ value: d.codigo, label: d.nome }));
+          setRoleOptions(ordenarCargosPorHierarquia(formatted));
+        }
+      } catch (e) {
+        console.error('[PontoEspelho] erro cargos', e);
+      }
+    };
+    void loadCargos();
+  }, []);
 
   const lastColabRequestId = useRef(0);
   const lastRequestId = useRef(0);
@@ -236,6 +296,11 @@ export const PontoEspelho: React.FC<PontoEspelhoProps> = ({ modoRH = false }) =>
     } as ColaboradorPonto;
   }, [colabSelecionado, colaboradores, user]);
 
+  const cargoColaboradorLabel = useMemo(
+    () => labelCargoColaborador(colaboradorAtual?.role, roleOptions),
+    [colaboradorAtual?.role, roleOptions],
+  );
+
   useEffect(() => {
     if (colaboradorAtual) {
       setBuscaColab(colaboradorAtual.nome || colaboradorAtual.email || '');
@@ -265,6 +330,28 @@ export const PontoEspelho: React.FC<PontoEspelhoProps> = ({ modoRH = false }) =>
   const margemDiasMes = opcoesConsolidacao?.multidiaMaxDias ?? 1;
   const cargaMetaMinutos = pontoConfig.carga_horaria_minutos;
   const espelhoEntradaSaida = usaPontoApenasEntradaSaida(colaboradorAtual?.role);
+
+  useEffect(() => {
+    let cancelado = false;
+    if (!empresaColaborador) {
+      setLogoUrlEmpresaFolha(null);
+      return;
+    }
+    void supabase
+      .from('empresas')
+      .select('logo_url')
+      .eq('id', empresaColaborador)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (!cancelado) setLogoUrlEmpresaFolha(data?.logo_url ?? null);
+      })
+      .catch(() => {
+        if (!cancelado) setLogoUrlEmpresaFolha(null);
+      });
+    return () => {
+      cancelado = true;
+    };
+  }, [empresaColaborador]);
 
   const diasDoMes = useMemo(() => getDiasNoMes(mesRef.ano, mesRef.mes), [mesRef]);
 
@@ -464,9 +551,9 @@ export const PontoEspelho: React.FC<PontoEspelhoProps> = ({ modoRH = false }) =>
     const lista = batidasDoTipo(batidasDia, tipo);
     if (!lista.length) return <span className="text-gray-300">--:--</span>;
     return (
-      <div className="flex flex-col items-center gap-0.5">
+      <div className="flex flex-col items-center gap-0.5 print:flex-row print:flex-wrap print:justify-center print:gap-x-0.5 print:gap-y-0">
         {lista.map((batida) => (
-          <span key={batida.id}>{renderTimeCell(batida, diaLinha)}</span>
+          <span key={batida.id} className="print:leading-none">{renderTimeCell(batida, diaLinha)}</span>
         ))}
       </div>
     );
@@ -491,13 +578,14 @@ export const PontoEspelho: React.FC<PontoEspelhoProps> = ({ modoRH = false }) =>
       const batidas = registrosConsolidados[dia] || [];
       const ocorrencia = ocorrenciasPorDia[dia];
       const folgaManual = isDiaFolgaManual(ocorrencia);
+      const bonificacaoManual = isDiaBonificado(ocorrencia);
       const atestado = isDiaAtestado(ocorrencia);
       const feriadoManual = ocorrencia?.tipo === 'feriado';
       const jornadaNormalManual = ocorrencia?.tipo === 'jornada_normal';
       const horaExtraManual = ocorrencia?.tipo === 'hora_extra';
-      
-      const justificado = folgaManual || atestado || feriadoManual || horaExtraManual;
-      const minutosTrabalhadosDia = calcularTrabalhadoMinutos(batidas);
+
+      const justificado = folgaManual || bonificacaoManual || atestado || feriadoManual || horaExtraManual;
+      const minutosTrabalhadosDia = calcularTrabalhadoMinutosColaborador(batidas, colaboradorAtual?.role, dia);
       const temBatida = batidas.length > 0;
       
       let metaDia = metaMinutosNoDia(pontoConfig, dia, temBatida, feriadosColaborador, feriasColaborador);
@@ -521,6 +609,7 @@ export const PontoEspelho: React.FC<PontoEspelhoProps> = ({ modoRH = false }) =>
 
       if (justificado) {
         if (folgaManual) diasFolga++;
+        if (bonificacaoManual) diasFolga++;
         if (atestado) diasAtestado++;
         if (feriadoManual) diasFolga++;
         if (horaExtraManual && temBatida) {
@@ -570,7 +659,7 @@ export const PontoEspelho: React.FC<PontoEspelhoProps> = ({ modoRH = false }) =>
     return diasDoMes.map((dia) => {
       const batidas = registrosConsolidados[dia] || [];
       const temBatida = batidas.length > 0;
-      const trabalhadoMinutos = calcularTrabalhadoMinutos(batidas);
+      const trabalhadoMinutos = calcularTrabalhadoMinutosColaborador(batidas, colaboradorAtual?.role, dia);
       const metaMinutos = metaMinutosNoDia(pontoConfig, dia, temBatida, feriadosColaborador, feriasColaborador);
       const diaFormatado = dia.slice(8);
 
@@ -582,6 +671,8 @@ export const PontoEspelho: React.FC<PontoEspelhoProps> = ({ modoRH = false }) =>
       };
     });
   }, [diasDoMes, registrosConsolidados, pontoConfig, feriadosColaborador, feriasColaborador, colaboradorAtual]);
+
+  const colSpanTotalFolha = espelhoEntradaSaida ? 5 : 7;
 
   const navegarMes = (dir: -1 | 1) => {
     setMesRef(prev => {
@@ -596,10 +687,363 @@ export const PontoEspelho: React.FC<PontoEspelhoProps> = ({ modoRH = false }) =>
   const nomeMes = new Date(mesRef.ano, mesRef.mes).toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
   const carregandoEspelho = aguardandoContexto || loading || loadingBatidas;
 
-  const handleImprimir = () => window.print();
+  const nomeEmpresaFolha = useMemo(() => {
+    const id = (colaboradorAtual?.empresa_id || empresaIdOperacao || '').trim();
+    if (id && empresaNomePorId[id]) return empresaNomePorId[id];
+    return empresasDoGrupo.find((e) => e.id === id)?.nome || empresasDoGrupo[0]?.nome || 'Empresa';
+  }, [colaboradorAtual?.empresa_id, empresaIdOperacao, empresaNomePorId, empresasDoGrupo]);
+
+  const dataImpressaoFolha = useMemo(
+    () =>
+      new Date().toLocaleString('pt-BR', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      }),
+    [],
+  );
+
+  const logoUrlFolha = useMemo(
+    () => resolveLogoUrl(logoUrlEmpresaFolha ?? empresa?.logo_url),
+    [logoUrlEmpresaFolha, empresa?.logo_url],
+  );
+
+  const nomeArquivoFolhaPonto = useMemo(
+    () => slugArquivoFolhaPonto(colaboradorAtual?.nome || 'colaborador', mesRef.ano, mesRef.mes),
+    [colaboradorAtual?.nome, mesRef.ano, mesRef.mes],
+  );
+
+  const tituloImpressaoFolha = useMemo(
+    () => tituloJanelaFolhaPonto(colaboradorAtual?.nome || 'Colaborador', nomeMes),
+    [colaboradorAtual?.nome, nomeMes],
+  );
+
+  const blocoAssinaturasFolhaImpressao = useMemo(() => {
+    if (!colaboradorAtual) return null;
+    return (
+      <div className="ponto-espelho-assinaturas-impressao hidden print:block border-t border-slate-400 bg-white">
+        {/* Local e Data */}
+        <div className="ponto-espelho-local-data mx-3 mt-2.5 mb-2.5 flex items-end gap-2">
+          <span className="text-[10px] font-bold text-gray-800 whitespace-nowrap">Local e Data:</span>
+          <span className="flex-1 border-b border-slate-600">&nbsp;</span>
+          <span className="text-[10px] font-semibold text-gray-600 whitespace-nowrap">, _____ / _____ / _________</span>
+        </div>
+        {/* Assinaturas — linhas simples */}
+        <div className="ponto-espelho-assinaturas-container mx-3 mb-3 flex gap-10">
+          <div className="flex-1 min-w-0 text-center">
+            <div className="ponto-espelho-linha-assinatura border-b-2 border-slate-700 mb-0.5" style={{ height: '28px' }}>&nbsp;</div>
+            <p className="ponto-espelho-dados-assinatura text-[10.5px] font-bold text-gray-900 leading-tight">{colaboradorAtual.nome || '—'}</p>
+            <p className="ponto-espelho-dados-assinatura text-[9px] font-semibold text-gray-500 leading-tight uppercase tracking-wide">Colaborador(a) • {cargoColaboradorLabel}</p>
+          </div>
+          <div className="flex-1 min-w-0 text-center">
+            <div className="ponto-espelho-linha-assinatura border-b-2 border-slate-700 mb-0.5" style={{ height: '28px' }}>&nbsp;</div>
+            <p className="ponto-espelho-dados-assinatura text-[10.5px] font-bold text-gray-900 leading-tight">{nomeEmpresaFolha}</p>
+            <p className="ponto-espelho-dados-assinatura text-[9px] font-semibold text-gray-500 leading-tight uppercase tracking-wide">Responsável da Empresa</p>
+          </div>
+        </div>
+      </div>
+    );
+  }, [colaboradorAtual, cargoColaboradorLabel, nomeEmpresaFolha]);
+
+  const linhasTabelaFolha = useMemo(
+    () =>
+      diasDoMes.map((dia) => {
+                const batidas = registrosConsolidados[dia] || [];
+                const ocorrencia = ocorrenciasPorDia[dia];
+                const folgaManual = isDiaFolgaManual(ocorrencia);
+                const bonificacaoManual = isDiaBonificado(ocorrencia);
+                const atestado = isDiaAtestado(ocorrencia);
+                const feriadoManual = ocorrencia?.tipo === 'feriado';
+                const jornadaNormalManual = ocorrencia?.tipo === 'jornada_normal';
+                const horaExtraManual = ocorrencia?.tipo === 'hora_extra';
+
+                const justificado = folgaManual || bonificacaoManual || atestado || feriadoManual || horaExtraManual;
+                const fds = isFimDeSemana(dia);
+                const futuro = dia > getDataLocalISO(hoje);
+                const diaNum = dia.slice(8);
+                const diaSem = diaSemanaAbrev(dia);
+
+                const minutostrab = calcularTrabalhadoMinutosColaborador(batidas, colaboradorAtual?.role, dia);
+                const intervaloMin = calcularIntervaloMinutos(batidas);
+                const intervaloImplicitoMin = intervaloAlmocoImplicitoMinutosNoDia(batidas, colaboradorAtual?.role, dia);
+                const sabadoDia = isSabadoLocal(dia);
+                const temBatida = batidas.length > 0;
+                
+                let metaDia = metaMinutosNoDia(pontoConfig, dia, temBatida, feriadosColaborador, feriasColaborador);
+                if (jornadaNormalManual) {
+                  metaDia = pontoConfig.carga_horaria_minutos;
+                } else if (justificado) {
+                  metaDia = 0;
+                }
+
+                const saldoDia = minutostrab - metaDia;
+                const hojeStr = getDataLocalISO(hoje);
+                const jornadaFechada = jornadaPontoFinalizada(batidas, colaboradorAtual?.role);
+                const diaEmAberto = dia === hojeStr && !jornadaFechada;
+                const antesInicio = diaAntesInicioPonto(pontoConfig, dia);
+                const folga12x36 = isDiaFolga12x36(pontoConfig, dia, temBatida) && !futuro;
+                const extra12x36 = isDiaExtra12x36(pontoConfig, dia, temBatida) && !futuro;
+                const horaExtra = (isDiaHoraExtra(pontoConfig, dia, temBatida) || horaExtraManual) && !jornadaNormalManual && !futuro;
+                const sabadoPlantao = isSabadoTrabalhoEscala(pontoConfig, dia);
+                const sabadoFolgaEscala = isSabadoFolgaEscala(pontoConfig, dia);
+                const feriado = isDiaFeriado(dia, feriadosColaborador) && !futuro;
+                const ferias = isDiaFerias(dia, feriasColaborador) && !futuro && !temBatida;
+                
+                const ocultarSaldo = futuro || antesInicio || feriado || ferias || (justificado && !horaExtraManual) || folga12x36
+                  || diaEmAberto
+                  || (metaDia === 0 && !temBatida);
+                const rowBg = fds ? 'bg-slate-50/80' : 'bg-white';
+
+                let statusBadge: React.ReactNode = null;
+                if (pontoConfig.regime === 'cargo_confianca') {
+                  statusBadge = <Badge variant="info" className="bg-slate-50 border-slate-200 text-slate-500">Isento</Badge>;
+                } else if (antesInicio) {
+                  statusBadge = <span className="text-xs text-gray-400">—</span>;
+                } else if (futuro) {
+                  statusBadge = <span className="text-xs text-gray-400">—</span>;
+                } else if (feriado) {
+                  statusBadge = <Badge variant="outline" className="bg-amber-50 border-amber-200 text-amber-700">Feriado</Badge>;
+                } else if (ferias) {
+                  statusBadge = <Badge variant="outline" className="bg-teal-50 border-teal-200 text-teal-700">Férias</Badge>;
+                } else if (atestado) {
+                  statusBadge = (
+                    <span title={ocorrencia?.motivo}>
+                      <Badge variant="outline" className="bg-sky-50 border-sky-200 text-sky-700">
+                        Atestado
+                      </Badge>
+                    </span>
+                  );
+                } else if (bonificacaoManual) {
+                  statusBadge = (
+                    <span title={ocorrencia?.motivo}>
+                      <Badge variant="outline" className="bg-emerald-50 border-emerald-200 text-emerald-700">
+                        Bonificado
+                      </Badge>
+                    </span>
+                  );
+                } else if (folgaManual) {
+                  statusBadge = (
+                    <span title={ocorrencia?.motivo}>
+                      <Badge variant="outline" className="bg-violet-50 border-violet-200 text-violet-700">
+                        Folga
+                      </Badge>
+                    </span>
+                  );
+                } else if (feriadoManual) {
+                  statusBadge = (
+                    <span title={ocorrencia?.motivo}>
+                      <Badge variant="outline" className="bg-amber-50 border-amber-200 text-amber-700">
+                        Feriado
+                      </Badge>
+                    </span>
+                  );
+                } else if (horaExtraManual) {
+                  statusBadge = (
+                    <span title={ocorrencia?.motivo}>
+                      <Badge variant="outline" className="bg-pink-50 border-pink-200 text-pink-700">
+                        Hora Extra
+                      </Badge>
+                    </span>
+                  );
+                } else if (jornadaNormalManual) {
+                  if (temBatida) {
+                    if (jornadaFechada && saldoDia >= 0) {
+                      statusBadge = <Badge variant="success">OK</Badge>;
+                    } else if (jornadaFechada) {
+                      statusBadge = <Badge variant="warning">Incompleto</Badge>;
+                    } else {
+                      statusBadge = <Badge variant="info">Parcial</Badge>;
+                    }
+                  } else {
+                    statusBadge = <Badge variant="danger">Falta</Badge>;
+                  }
+                } else if (
+                  folga12x36
+                  || (sabadoFolgaEscala && !temBatida)
+                  || (isDomingoLocal(dia) && !temBatida && (temEscalaSabadoAlternado(pontoConfig) || !isRegime12x36(pontoConfig)))
+                  || (fds && !temBatida && !isRegime12x36(pontoConfig) && !temEscalaSabadoAlternado(pontoConfig))
+                ) {
+                  statusBadge = <Badge variant="outline">Folga</Badge>;
+                } else if (temEscalaSabadoAlternado(pontoConfig) && isSabadoLocal(dia) && temBatida) {
+                  if (jornadaFechada && saldoDia >= 0) {
+                    statusBadge = <Badge variant="success">OK</Badge>;
+                  } else if (jornadaFechada) {
+                    statusBadge = <Badge variant="warning">Incompleto</Badge>;
+                  } else {
+                    statusBadge = <Badge variant="info">Parcial</Badge>;
+                  }
+                } else if (sabadoPlantao && temBatida) {
+                  if (jornadaFechada && saldoDia >= 0) {
+                    statusBadge = <Badge variant="success">OK</Badge>;
+                  } else if (jornadaFechada) {
+                    statusBadge = <Badge variant="warning">Incompleto</Badge>;
+                  } else {
+                    statusBadge = <Badge variant="info">Parcial</Badge>;
+                  }
+                } else if (extra12x36 || horaExtra) {
+                  statusBadge = <Badge variant="info">Extra</Badge>;
+                } else if (!justificado && (jornadaNormalManual || diaExigeRegistroPonto(pontoConfig, dia, temBatida, feriadosColaborador, feriasColaborador))) {
+                  statusBadge = <Badge variant="danger">Falta</Badge>;
+                } else if (jornadaFechada && saldoDia >= 0) {
+                  statusBadge = <Badge variant="success">OK</Badge>;
+                } else if (jornadaFechada) {
+                  statusBadge = <Badge variant="warning">Incompleto</Badge>;
+                } else if (temBatida) {
+                  statusBadge = <Badge variant="info">Parcial</Badge>;
+                } else {
+                  statusBadge = <Badge variant="info">Aberto</Badge>;
+                }
+
+                const batidasLinha = espelhoEntradaSaida
+                  ? normalizarBatidasEntradaSaida(batidas)
+                  : batidas;
+
+                return (
+                  <tr
+                    key={dia}
+                    className={`border-b border-slate-200 ${rowBg} ${futuro || antesInicio ? 'opacity-40 print:opacity-100' : ''} hover:bg-indigo-50/40 transition-colors print:hover:bg-transparent`}
+                  >
+                    <td className={`px-3 py-2 font-semibold text-gray-900 border border-slate-200 sticky left-0 z-10 print:static print:px-1.5 print:py-0.5 print:leading-none ${rowBg}`}>
+                      <span className="print:hidden">{diaNum}/{String(mesRef.mes + 1).padStart(2, '0')}</span>
+                      <span className="hidden print:inline whitespace-nowrap">{diaNum}/{String(mesRef.mes + 1).padStart(2, '0')} {diaSem}</span>
+                    </td>
+                    <td className={`px-3 py-2 text-[10px] uppercase font-bold border border-slate-200 sticky left-20 z-10 print:static print:hidden ${fds ? 'text-red-500' : 'text-gray-500'} ${rowBg}`}>{diaSem}</td>
+                    <td className="px-2 py-2 text-center font-mono text-gray-700 border border-slate-200 tabular-nums print:px-1.5 print:py-0.5 print:leading-none">{renderBatidasTipoCell(batidasLinha, 'entrada', dia)}</td>
+                    {!espelhoEntradaSaida && (
+                      <>
+                        <td className="px-2 py-2 text-center font-mono text-gray-700 border border-slate-200 tabular-nums print:px-1.5 print:py-0.5 print:leading-none">{renderBatidasTipoCell(batidas, 'inicio_intervalo', dia)}</td>
+                        <td className="px-2 py-2 text-center font-mono text-gray-700 border border-slate-200 tabular-nums print:px-1.5 print:py-0.5 print:leading-none">{renderBatidasTipoCell(batidas, 'fim_intervalo', dia)}</td>
+                      </>
+                    )}
+                    <td className="px-2 py-2 text-center font-mono text-gray-700 border border-slate-200 tabular-nums print:px-1.5 print:py-0.5 print:leading-none">{renderBatidasTipoCell(batidasLinha, 'saida', dia)}</td>
+                    {espelhoEntradaSaida && (
+                      <td className="px-2 py-2 text-center font-mono text-gray-600 border border-slate-200 tabular-nums print:px-1.5 print:py-0.5 print:leading-none">
+                        {intervaloImplicitoMin > 0 ? (
+                          <span className="text-amber-800 font-semibold" title="Intervalo de 2h descontado do total trabalhado (dias úteis)">
+                            {formatarDuracaoPonto(intervaloImplicitoMin)}†
+                          </span>
+                        ) : sabadoDia && temBatida && jornadaFechada ? (
+                          <span className="text-slate-600 font-semibold text-[10px] print:text-[8px]" title="Sábado sem intervalo de almoço">
+                            s/ int.
+                          </span>
+                        ) : (
+                          <span className="text-gray-300">--:--</span>
+                        )}
+                      </td>
+                    )}
+                    {!espelhoEntradaSaida && (
+                      <td className="px-2 py-2 text-center font-mono text-gray-500 border border-slate-200 tabular-nums print:px-1.5 print:py-0.5 print:leading-none">
+                        {temBatida && intervaloMin > 0 ? (
+                          formatarDuracaoPonto(intervaloMin)
+                        ) : sabadoDia && temBatida && jornadaFechada ? (
+                          <span className="text-slate-600 font-semibold text-[10px] print:text-[8px]" title="Sábado sem intervalo de almoço">
+                            s/ int.
+                          </span>
+                        ) : (
+                          <span className="text-gray-300">--:--</span>
+                        )}
+                      </td>
+                    )}
+                    <td className="px-2 py-2 text-center font-mono font-medium text-gray-900 border border-slate-200 tabular-nums print:px-1.5 print:py-0.5 print:leading-none">{temBatida ? formatarDuracaoPonto(minutostrab) : <span className="text-gray-300">--:--</span>}</td>
+                    <td className={`ponto-espelho-col-saldo px-2 py-2 text-center font-mono font-medium border border-slate-200 tabular-nums print:px-2 print:py-0.5 print:leading-none ${
+                      ocultarSaldo && !diaEmAberto ? 'text-gray-300' :
+                      !ocultarSaldo && saldoDia >= 0 ? 'text-green-600' : !ocultarSaldo ? 'text-red-600' : 'text-gray-400'
+                    }`}>
+                      {diaEmAberto && temBatida ? (
+                        <span className="text-[10px] italic font-sans print:text-[6px]">Aberto</span>
+                      ) : ocultarSaldo ? (
+                        <span className="text-gray-300">--:--</span>
+                      ) : (
+                        <>{saldoDia > 0 ? '+' : ''}{formatarDuracaoPonto(saldoDia)}</>
+                      )}
+                    </td>
+                    <td className="px-2 py-2 text-center border border-slate-200 print:hidden">{statusBadge}</td>
+                    {podeEditarFolha && (
+                      <td className="px-2 py-2 text-center border border-slate-200 print:hidden">
+                        {!futuro && empresaColaborador && (
+                          <div className="flex items-center justify-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => setDiaEmEdicao(dia)}
+                              className="p-1.5 rounded-md text-indigo-600 hover:bg-indigo-50 transition-colors"
+                              title="Editar horários do dia"
+                            >
+                              <Pencil className="h-4 w-4" />
+                            </button>
+                          </div>
+                        )}
+                      </td>
+                    )}
+                  </tr>
+                );
+
+      }),
+    [
+    diasDoMes,
+    registrosConsolidados,
+    ocorrenciasPorDia,
+    colaboradorAtual,
+    pontoConfig,
+    feriadosColaborador,
+    feriasColaborador,
+    hoje,
+    mesRef.mes,
+    espelhoEntradaSaida,
+    podeEditarFolha,
+    empresaColaborador,
+  ],
+  );
+
+  const handleImprimir = async () => {
+    if (!colaboradorAtual) {
+      showToast('Selecione um colaborador para imprimir a folha de ponto.', 'warning');
+      return;
+    }
+    if (activeTab !== 'espelho') {
+      setActiveTab('espelho');
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    }
+    const tituloAnterior = document.title;
+    document.title = tituloImpressaoFolha;
+    const restaurarTitulo = () => {
+      document.title = tituloAnterior;
+      window.removeEventListener('afterprint', restaurarTitulo);
+    };
+    window.addEventListener('afterprint', restaurarTitulo);
+    window.print();
+  };
+
+  const handleBaixarPdf = async () => {
+    if (!colaboradorAtual) {
+      showToast('Selecione um colaborador para baixar a folha de ponto.', 'warning');
+      return;
+    }
+    const root = document.getElementById('ponto-espelho-print-root');
+    if (!root) {
+      showToast('Não foi possível localizar o conteúdo da folha de ponto.', 'error');
+      return;
+    }
+    if (activeTab !== 'espelho') {
+      setActiveTab('espelho');
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    }
+    setGerandoPdf(true);
+    try {
+      await baixarPdfFolhaPonto(root, nomeArquivoFolhaPonto);
+      showToast(`PDF salvo como ${nomeArquivoFolhaPonto}`, 'success');
+    } catch (err) {
+      console.error('[PontoEspelho] baixar PDF', err);
+      showToast('Não foi possível gerar o PDF da folha de ponto.', 'error');
+    } finally {
+      setGerandoPdf(false);
+    }
+  };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 print:space-y-0 print:m-0 print:p-0">
+      <div className="print:hidden">
       <PageHeader
         title={podeVerEspelhoTodos ? 'Espelho de Ponto' : 'Meu espelho de ponto'}
         subtitle={
@@ -617,13 +1061,18 @@ export const PontoEspelho: React.FC<PontoEspelhoProps> = ({ modoRH = false }) =>
               <RefreshCw className={`h-4 w-4 mr-2 ${loadingBatidas ? 'animate-spin' : ''}`} />
               Atualizar
             </Button>
-            <Button variant="outline" onClick={handleImprimir}>
+            <Button variant="outline" onClick={handleImprimir} disabled={!colaboradorAtual || gerandoPdf}>
               <Printer className="h-4 w-4 mr-2" />
               Imprimir
+            </Button>
+            <Button variant="outline" onClick={() => void handleBaixarPdf()} disabled={!colaboradorAtual || gerandoPdf}>
+              <Download className={`h-4 w-4 mr-2 ${gerandoPdf ? 'animate-pulse' : ''}`} />
+              {gerandoPdf ? 'Gerando PDF…' : 'Baixar PDF'}
             </Button>
           </div>
         }
       />
+      </div>
 
       {/* Filtros */}
       <Card className="p-4 print:hidden !overflow-visible">
@@ -713,17 +1162,18 @@ export const PontoEspelho: React.FC<PontoEspelhoProps> = ({ modoRH = false }) =>
         </div>
       </Card>
 
-      {/* Header do colaborador no print */}
+      <div id="ponto-espelho-print-root" className="ponto-espelho-pagina-a4 space-y-4 print:space-y-0 print:mt-0 print:block print:border print:border-slate-500">
+      {/* Header do colaborador na tela */}
       {colaboradorAtual && (
-        <Card className="p-0 overflow-hidden">
+        <Card className="p-0 overflow-hidden print:hidden">
           <div className="bg-gradient-to-r from-indigo-700 to-indigo-600 px-6 py-4 text-white">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-3 min-w-0">
                 <div className="h-10 w-10 rounded-full bg-white/10 flex items-center justify-center">
                   <User className="h-5 w-5 text-white/80" />
                 </div>
-                <div>
-                  <h2 className="font-semibold text-lg">{colaboradorAtual.nome || 'Colaborador'}</h2>
+                <div className="min-w-0">
+                  <h2 className="font-semibold text-lg truncate">{colaboradorAtual.nome || 'Colaborador'}</h2>
                   <p className="text-sm text-white/70">
                     {colaboradorAtual.role || 'Sem cargo'} &middot; {labelRegimePonto(pontoConfig.regime)}
                     {isRegime12x36(pontoConfig)
@@ -736,7 +1186,7 @@ export const PontoEspelho: React.FC<PontoEspelhoProps> = ({ modoRH = false }) =>
                   </p>
                 </div>
               </div>
-              <div className="text-right hidden sm:block">
+              <div className="text-right hidden sm:block shrink-0">
                 <p className="text-sm text-white/60">Período</p>
                 <p className="font-semibold capitalize">{nomeMes}</p>
               </div>
@@ -797,22 +1247,88 @@ export const PontoEspelho: React.FC<PontoEspelhoProps> = ({ modoRH = false }) =>
         </button>
       </div>
 
-      {activeTab === 'espelho' && (
-        <>
-          {(podeEditarFolha || temAjusteManualNoMes) && (
-            <p className="text-xs text-gray-600 print:text-gray-800">
+      {/* Cabeçalho oficial — somente impressão / PDF */}
+      {colaboradorAtual && (
+        <div className="ponto-espelho-somente-impressao border border-slate-400 border-b-0">
+          <div className="ponto-espelho-cabecalho-top border-b border-slate-400 px-2 py-1 bg-slate-50 flex items-center gap-2">
+            <img
+              src={logoUrlFolha}
+              alt="Logo"
+              className="ponto-espelho-logo h-8 w-auto max-w-[96px] object-contain shrink-0"
+            />
+            <div className="flex-1 min-w-0 text-center">
+              <p className="text-[11px] uppercase tracking-[0.12em] text-gray-800 font-bold">{nomeEmpresaFolha}</p>
+              <h1 className="text-[15px] font-black uppercase tracking-wide text-gray-900 mt-0.5">
+                Folha de Ponto — Espelho de Horário
+              </h1>
+              <p className="text-[11px] capitalize text-gray-700 font-semibold mt-0.5">Período de referência: {nomeMes}</p>
+            </div>
+            <div className="ponto-espelho-marca-sistema shrink-0 text-right leading-tight">
+              <p className="text-[9px] font-extrabold uppercase tracking-wider text-slate-700">{APEX_PLAN_NAME}</p>
+              <p className="text-[7px] font-semibold text-slate-500 mt-0.5">{APEX_PLAN_TAGLINE}</p>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-x-4 gap-y-0 px-2 py-1 text-[10px] font-semibold border-b border-slate-300 bg-white leading-tight">
+            <p><span className="font-bold text-gray-800">Colaborador:</span> {colaboradorAtual.nome || '—'}</p>
+            <p><span className="font-bold text-gray-800">Cargo:</span> {cargoColaboradorLabel}</p>
+            <p className="truncate"><span className="font-bold text-gray-800">E-mail:</span> {colaboradorAtual.email || '—'}</p>
+            <p><span className="font-bold text-gray-800">Regime:</span> {labelRegimePonto(pontoConfig.regime)}</p>
+          </div>
+          <div className="grid grid-cols-5 divide-x divide-slate-300 border-b border-slate-300 text-center bg-white">
+            <div className="py-1 px-1">
+              <p className="text-[9px] uppercase font-bold text-gray-600 leading-none">Trabalhado</p>
+              <p className="text-[13px] font-mono font-black text-gray-900 leading-none mt-0.5">{formatarDuracaoPonto(resumoMensal.totalTrabalhado)}</p>
+            </div>
+            <div className="py-1 px-1">
+              <p className="text-[9px] uppercase font-bold text-gray-600 leading-none">Meta</p>
+              <p className="text-[13px] font-mono font-black text-gray-900 leading-none mt-0.5">{formatarDuracaoPonto(resumoMensal.totalMeta)}</p>
+            </div>
+            <div className="py-1 px-1">
+              <p className="text-[9px] uppercase font-bold text-gray-600 leading-none">Saldo</p>
+              <p className={`text-[13px] font-mono font-black leading-none mt-0.5 ${resumoMensal.saldo >= 0 ? 'text-green-700' : 'text-red-700'}`}>
+                {resumoMensal.saldo > 0 ? '+' : ''}{formatarDuracaoPonto(resumoMensal.saldo)}
+              </p>
+            </div>
+            <div className="py-1 px-1">
+              <p className="text-[9px] uppercase font-bold text-gray-600 leading-none">Dias Trab.</p>
+              <p className="text-[13px] font-mono font-black text-gray-900 leading-none mt-0.5">{resumoMensal.diasTrabalhados}</p>
+            </div>
+            <div className="py-1 px-1">
+              <p className="text-[9px] uppercase font-bold text-gray-600 leading-none">Faltas</p>
+              <p className={`text-[13px] font-mono font-black leading-none mt-0.5 ${resumoMensal.diasFalta > 0 ? 'text-red-700' : 'text-gray-900'}`}>
+                {resumoMensal.diasFalta}
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className={`ponto-espelho-secao-tabela ${activeTab === 'espelho' ? 'block' : 'hidden print:block'}`}>
+            {(podeEditarFolha || temAjusteManualNoMes || espelhoEntradaSaida) && (
+            <div className="space-y-1 print:hidden">
+            {(podeEditarFolha || temAjusteManualNoMes) && (
+            <p className="text-xs text-gray-600 print:hidden">
               <span className="font-semibold text-amber-800">*</span> = horário lançado ou corrigido manualmente pelo
               administrador/gestor.
               {podeEditarFolha && (
-                <span className="print:hidden"> Clique no lápis na linha do dia para ajustar.</span>
+                <span> Clique no lápis na linha do dia para ajustar.</span>
               )}
             </p>
+            )}
+            {espelhoEntradaSaida && (
+              <p className="text-xs text-slate-600 print:text-[7px] print:text-gray-800 print:leading-snug print:mb-1">
+                <span className="font-semibold text-slate-800">†</span> = intervalo intrajornada de{' '}
+                {formatarDuracaoPonto(INTERVALO_ALMOCO_IMPLICITO_ENTRADA_SAIDA_MINUTOS)} pré-assinalado no sistema.
+                Este cargo registra apenas entrada e saída; o intervalo não é batido no ponto eletrônico.
+              </p>
+            )}
+            </div>
           )}
 
           {/* Tabela detalhada por dia */}
-          <Card className="p-0 overflow-hidden relative min-h-[280px]">
+          <Card className="p-0 overflow-hidden relative min-h-[280px] print:min-h-0 print:border-0 print:shadow-none print:rounded-none print:overflow-visible">
         {carregandoEspelho && (
-          <div className="absolute inset-0 bg-white/80 flex items-center justify-center z-20">
+          <div className="absolute inset-0 bg-white/80 flex items-center justify-center z-20 print:hidden">
             <div className="flex flex-col items-center gap-2">
               <RefreshCw className="h-8 w-8 text-indigo-600 animate-spin" />
               <span className="text-sm font-medium text-gray-600">
@@ -821,236 +1337,60 @@ export const PontoEspelho: React.FC<PontoEspelhoProps> = ({ modoRH = false }) =>
             </div>
           </div>
         )}
-        <div className="overflow-x-auto max-h-[min(720px,calc(100vh-220px))] print:max-h-none">
-          <table className="w-full text-xs border-collapse">
+        <div className="ponto-espelho-tabela-scroll overflow-x-auto max-h-[min(720px,calc(100vh-220px))] print:max-h-none print:overflow-visible print:border-x print:border-slate-400">
+          <table className="w-full text-xs border-collapse print:text-[11px] print:table-fixed print:leading-snug print:font-semibold">
             <thead className="sticky top-0 z-20 print:static">
-              <tr className="bg-slate-800 text-white uppercase text-[10px] font-black tracking-wider">
-                <th className="text-left px-3 py-2.5 border border-slate-600 w-20 sticky left-0 z-30 bg-slate-800 print:static">Data</th>
-                <th className="text-left px-3 py-2.5 border border-slate-600 w-12 sticky left-20 z-30 bg-slate-800 print:static">Dia</th>
-                <th className="text-center px-2 py-2.5 border border-slate-600 min-w-[72px]">
-                  <span className="inline-flex items-center justify-center gap-1"><LogIn className="h-3 w-3 shrink-0" /> Entrada</span>
+              <tr className="bg-slate-800 text-white uppercase text-[10px] font-black tracking-wider print:bg-slate-100 print:text-black print:text-[10px] print:leading-snug print:font-extrabold">
+                <th className="text-left px-3 py-2.5 border border-slate-600 w-20 sticky left-0 z-30 bg-slate-800 print:static print:w-[13%] print:px-1.5 print:py-0.5">Data</th>
+                <th className="text-left px-3 py-2.5 border border-slate-600 w-12 sticky left-20 z-30 bg-slate-800 print:static print:hidden">Dia</th>
+                <th className="text-center px-2 py-2.5 border border-slate-600 min-w-[72px] print:min-w-0 print:w-[17%] print:px-1.5 print:py-0.5">
+                  <span className="inline-flex items-center justify-center gap-1 print:hidden"><LogIn className="h-3 w-3 shrink-0" /> Entrada</span>
+                  <span className="hidden print:inline">Entrada</span>
                 </th>
                 {!espelhoEntradaSaida && (
                   <>
-                    <th className="text-center px-2 py-2.5 border border-slate-600 min-w-[80px]">
-                      <span className="inline-flex items-center justify-center gap-1"><Coffee className="h-3 w-3 shrink-0" /> Ini. Intervalo</span>
+                    <th className="text-center px-2 py-2.5 border border-slate-600 min-w-[80px] print:min-w-0 print:px-1.5 print:py-0.5">
+                      <span className="inline-flex items-center justify-center gap-1 print:hidden"><Coffee className="h-3 w-3 shrink-0" /> Ini. Intervalo</span>
+                      <span className="hidden print:inline">Int. Início</span>
                     </th>
-                    <th className="text-center px-2 py-2.5 border border-slate-600 min-w-[80px]">
-                      <span className="inline-flex items-center justify-center gap-1"><LogIn className="h-3 w-3 shrink-0" /> Fim Intervalo</span>
+                    <th className="text-center px-2 py-2.5 border border-slate-600 min-w-[80px] print:min-w-0 print:px-1.5 print:py-0.5">
+                      <span className="inline-flex items-center justify-center gap-1 print:hidden"><LogIn className="h-3 w-3 shrink-0" /> Fim Intervalo</span>
+                      <span className="hidden print:inline">Int. Fim</span>
                     </th>
                   </>
                 )}
-                <th className="text-center px-2 py-2.5 border border-slate-600 min-w-[72px]">
-                  <span className="inline-flex items-center justify-center gap-1"><LogOut className="h-3 w-3 shrink-0" /> Saída</span>
+                <th className="text-center px-2 py-2.5 border border-slate-600 min-w-[72px] print:min-w-0 print:w-[17%] print:px-1.5 print:py-0.5">
+                  <span className="inline-flex items-center justify-center gap-1 print:hidden"><LogOut className="h-3 w-3 shrink-0" /> Saída</span>
+                  <span className="hidden print:inline">Saída</span>
                 </th>
-                {!espelhoEntradaSaida && (
-                  <th className="text-center px-2 py-2.5 border border-slate-600 min-w-[64px]">Intervalo</th>
+                {espelhoEntradaSaida && (
+                  <th className="text-center px-2 py-2.5 border border-slate-600 min-w-[64px] print:min-w-0 print:w-[11%] print:px-1.5 print:py-0.5">
+                    <span className="print:hidden">Int. alm. †</span>
+                    <span className="hidden print:inline">Int. alm. †</span>
+                  </th>
                 )}
-                <th className="text-center px-2 py-2.5 border border-slate-600 min-w-[72px]">Trabalhado</th>
-                <th className="text-center px-2 py-2.5 border border-slate-600 min-w-[64px]">Saldo</th>
-                <th className="text-center px-2 py-2.5 border border-slate-600 min-w-[88px]">Status</th>
+                {!espelhoEntradaSaida && (
+                  <th className="text-center px-2 py-2.5 border border-slate-600 min-w-[64px] print:min-w-0 print:px-1.5 print:py-0.5">Intervalo</th>
+                )}
+                <th className="text-center px-2 py-2.5 border border-slate-600 min-w-[72px] print:min-w-0 print:w-[16%] print:px-1.5 print:py-0.5">Trabalhado</th>
+                <th className="ponto-espelho-col-saldo text-center px-2 py-2.5 border border-slate-600 min-w-[64px] print:min-w-0 print:w-[16%] print:px-2 print:py-0.5">Saldo</th>
+                <th className="text-center px-2 py-2.5 border border-slate-600 min-w-[88px] print:hidden">Status</th>
                 {podeEditarFolha && (
                   <th className="text-center px-2 py-2.5 border border-slate-600 w-12 print:hidden">Ações</th>
                 )}
               </tr>
             </thead>
             <tbody>
-              {diasDoMes.map(dia => {
-                const batidas = registrosConsolidados[dia] || [];
-                const ocorrencia = ocorrenciasPorDia[dia];
-                const folgaManual = isDiaFolgaManual(ocorrencia);
-                const atestado = isDiaAtestado(ocorrencia);
-                const feriadoManual = ocorrencia?.tipo === 'feriado';
-                const jornadaNormalManual = ocorrencia?.tipo === 'jornada_normal';
-                const horaExtraManual = ocorrencia?.tipo === 'hora_extra';
-                
-                const justificado = folgaManual || atestado || feriadoManual || horaExtraManual;
-                const fds = isFimDeSemana(dia);
-                const futuro = dia > getDataLocalISO(hoje);
-                const diaNum = dia.slice(8);
-                const diaSem = diaSemanaAbrev(dia);
-
-                const minutostrab = calcularTrabalhadoMinutos(batidas);
-                const intervaloMin = calcularIntervaloMinutos(batidas);
-                const temBatida = batidas.length > 0;
-                
-                let metaDia = metaMinutosNoDia(pontoConfig, dia, temBatida, feriadosColaborador, feriasColaborador);
-                if (jornadaNormalManual) {
-                  metaDia = pontoConfig.carga_horaria_minutos;
-                } else if (justificado) {
-                  metaDia = 0;
-                }
-
-                const saldoDia = minutostrab - metaDia;
-                const hojeStr = getDataLocalISO(hoje);
-                const jornadaFechada = jornadaPontoFinalizada(batidas, colaboradorAtual?.role);
-                const diaEmAberto = dia === hojeStr && !jornadaFechada;
-                const antesInicio = diaAntesInicioPonto(pontoConfig, dia);
-                const folga12x36 = isDiaFolga12x36(pontoConfig, dia, temBatida) && !futuro;
-                const extra12x36 = isDiaExtra12x36(pontoConfig, dia, temBatida) && !futuro;
-                const horaExtra = (isDiaHoraExtra(pontoConfig, dia, temBatida) || horaExtraManual) && !jornadaNormalManual && !futuro;
-                const sabadoPlantao = isSabadoTrabalhoEscala(pontoConfig, dia);
-                const sabadoFolgaEscala = isSabadoFolgaEscala(pontoConfig, dia);
-                const feriado = isDiaFeriado(dia, feriadosColaborador) && !futuro;
-                const ferias = isDiaFerias(dia, feriasColaborador) && !futuro && !temBatida;
-                
-                const ocultarSaldo = futuro || antesInicio || feriado || ferias || (justificado && !horaExtraManual) || folga12x36
-                  || diaEmAberto
-                  || (metaDia === 0 && !temBatida);
-                const rowBg = fds ? 'bg-slate-50/80' : 'bg-white';
-
-                let statusBadge: React.ReactNode = null;
-                if (pontoConfig.regime === 'cargo_confianca') {
-                  statusBadge = <Badge variant="info" className="bg-slate-50 border-slate-200 text-slate-500">Isento</Badge>;
-                } else if (antesInicio) {
-                  statusBadge = <span className="text-xs text-gray-400">—</span>;
-                } else if (futuro) {
-                  statusBadge = <span className="text-xs text-gray-400">—</span>;
-                } else if (feriado) {
-                  statusBadge = <Badge variant="outline" className="bg-amber-50 border-amber-200 text-amber-700">Feriado</Badge>;
-                } else if (ferias) {
-                  statusBadge = <Badge variant="outline" className="bg-teal-50 border-teal-200 text-teal-700">Férias</Badge>;
-                } else if (atestado) {
-                  statusBadge = (
-                    <span title={ocorrencia?.motivo}>
-                      <Badge variant="outline" className="bg-sky-50 border-sky-200 text-sky-700">
-                        Atestado
-                      </Badge>
-                    </span>
-                  );
-                } else if (folgaManual) {
-                  statusBadge = (
-                    <span title={ocorrencia?.motivo}>
-                      <Badge variant="outline" className="bg-violet-50 border-violet-200 text-violet-700">
-                        Folga
-                      </Badge>
-                    </span>
-                  );
-                } else if (feriadoManual) {
-                  statusBadge = (
-                    <span title={ocorrencia?.motivo}>
-                      <Badge variant="outline" className="bg-amber-50 border-amber-200 text-amber-700">
-                        Feriado
-                      </Badge>
-                    </span>
-                  );
-                } else if (horaExtraManual) {
-                  statusBadge = (
-                    <span title={ocorrencia?.motivo}>
-                      <Badge variant="outline" className="bg-pink-50 border-pink-200 text-pink-700">
-                        Hora Extra
-                      </Badge>
-                    </span>
-                  );
-                } else if (jornadaNormalManual) {
-                  if (temBatida) {
-                    if (jornadaFechada && saldoDia >= 0) {
-                      statusBadge = <Badge variant="success">OK</Badge>;
-                    } else if (jornadaFechada) {
-                      statusBadge = <Badge variant="warning">Incompleto</Badge>;
-                    } else {
-                      statusBadge = <Badge variant="info">Parcial</Badge>;
-                    }
-                  } else {
-                    statusBadge = <Badge variant="danger">Falta</Badge>;
-                  }
-                } else if (
-                  folga12x36
-                  || (sabadoFolgaEscala && !temBatida)
-                  || (isDomingoLocal(dia) && !temBatida && (temEscalaSabadoAlternado(pontoConfig) || !isRegime12x36(pontoConfig)))
-                  || (fds && !temBatida && !isRegime12x36(pontoConfig) && !temEscalaSabadoAlternado(pontoConfig))
-                ) {
-                  statusBadge = <Badge variant="outline">Folga</Badge>;
-                } else if (temEscalaSabadoAlternado(pontoConfig) && isSabadoLocal(dia) && temBatida) {
-                  if (jornadaFechada && saldoDia >= 0) {
-                    statusBadge = <Badge variant="success">OK</Badge>;
-                  } else if (jornadaFechada) {
-                    statusBadge = <Badge variant="warning">Incompleto</Badge>;
-                  } else {
-                    statusBadge = <Badge variant="info">Parcial</Badge>;
-                  }
-                } else if (sabadoPlantao && temBatida) {
-                  if (jornadaFechada && saldoDia >= 0) {
-                    statusBadge = <Badge variant="success">OK</Badge>;
-                  } else if (jornadaFechada) {
-                    statusBadge = <Badge variant="warning">Incompleto</Badge>;
-                  } else {
-                    statusBadge = <Badge variant="info">Parcial</Badge>;
-                  }
-                } else if (extra12x36 || horaExtra) {
-                  statusBadge = <Badge variant="info">Extra</Badge>;
-                } else if (!justificado && (jornadaNormalManual || diaExigeRegistroPonto(pontoConfig, dia, temBatida, feriadosColaborador, feriasColaborador))) {
-                  statusBadge = <Badge variant="danger">Falta</Badge>;
-                } else if (jornadaFechada && saldoDia >= 0) {
-                  statusBadge = <Badge variant="success">OK</Badge>;
-                } else if (jornadaFechada) {
-                  statusBadge = <Badge variant="warning">Incompleto</Badge>;
-                } else if (temBatida) {
-                  statusBadge = <Badge variant="info">Parcial</Badge>;
-                } else {
-                  statusBadge = <Badge variant="info">Aberto</Badge>;
-                }
-
-                return (
-                  <tr
-                    key={dia}
-                    className={`border-b border-slate-200 ${rowBg} ${futuro || antesInicio ? 'opacity-40' : ''} hover:bg-indigo-50/40 transition-colors`}
-                  >
-                    <td className={`px-3 py-2 font-semibold text-gray-900 border border-slate-200 sticky left-0 z-10 ${rowBg}`}>{diaNum}/{String(mesRef.mes + 1).padStart(2, '0')}</td>
-                    <td className={`px-3 py-2 text-[10px] uppercase font-bold border border-slate-200 sticky left-20 z-10 ${fds ? 'text-red-500' : 'text-gray-500'} ${rowBg}`}>{diaSem}</td>
-                    <td className="px-2 py-2 text-center font-mono text-gray-700 border border-slate-200 tabular-nums">{renderBatidasTipoCell(batidas, 'entrada', dia)}</td>
-                    {!espelhoEntradaSaida && (
-                      <>
-                        <td className="px-2 py-2 text-center font-mono text-gray-700 border border-slate-200 tabular-nums">{renderBatidasTipoCell(batidas, 'inicio_intervalo', dia)}</td>
-                        <td className="px-2 py-2 text-center font-mono text-gray-700 border border-slate-200 tabular-nums">{renderBatidasTipoCell(batidas, 'fim_intervalo', dia)}</td>
-                      </>
-                    )}
-                    <td className="px-2 py-2 text-center font-mono text-gray-700 border border-slate-200 tabular-nums">{renderBatidasTipoCell(batidas, 'saida', dia)}</td>
-                    {!espelhoEntradaSaida && (
-                      <td className="px-2 py-2 text-center font-mono text-gray-500 border border-slate-200 tabular-nums">{temBatida && intervaloMin > 0 ? formatarDuracaoPonto(intervaloMin) : <span className="text-gray-300">--:--</span>}</td>
-                    )}
-                    <td className="px-2 py-2 text-center font-mono font-medium text-gray-900 border border-slate-200 tabular-nums">{temBatida ? formatarDuracaoPonto(minutostrab) : <span className="text-gray-300">--:--</span>}</td>
-                    <td className={`px-2 py-2 text-center font-mono font-medium border border-slate-200 tabular-nums ${
-                      ocultarSaldo && !diaEmAberto ? 'text-gray-300' :
-                      !ocultarSaldo && saldoDia >= 0 ? 'text-green-600' : !ocultarSaldo ? 'text-red-600' : 'text-gray-400'
-                    }`}>
-                      {diaEmAberto && temBatida ? (
-                        <span className="text-[10px] italic font-sans">Aberto</span>
-                      ) : ocultarSaldo ? (
-                        <span className="text-gray-300">--:--</span>
-                      ) : (
-                        <>{saldoDia > 0 ? '+' : ''}{formatarDuracaoPonto(saldoDia)}</>
-                      )}
-                    </td>
-                    <td className="px-2 py-2 text-center border border-slate-200">{statusBadge}</td>
-                    {podeEditarFolha && (
-                      <td className="px-2 py-2 text-center border border-slate-200 print:hidden">
-                        {!futuro && empresaColaborador && (
-                          <div className="flex items-center justify-center gap-1">
-                            <button
-                              type="button"
-                              onClick={() => setDiaEmEdicao(dia)}
-                              className="p-1.5 rounded-md text-indigo-600 hover:bg-indigo-50 transition-colors"
-                              title="Editar horários do dia"
-                            >
-                              <Pencil className="h-4 w-4" />
-                            </button>
-                          </div>
-                        )}
-                      </td>
-                    )}
-                  </tr>
-                );
-              })}
+              {linhasTabelaFolha}
             </tbody>
             <tfoot className="sticky bottom-0 z-10 print:static">
-              <tr className="bg-slate-100 border-t-2 border-slate-400 font-bold text-[11px]">
-                <td colSpan={espelhoEntradaSaida ? 4 : 7} className="px-3 py-2.5 text-right text-gray-700 border border-slate-300 sticky left-0 bg-slate-100">Total do Mês:</td>
-                <td className="px-2 py-2.5 text-center font-mono text-gray-900 border border-slate-300 tabular-nums">{formatarDuracaoPonto(resumoMensal.totalTrabalhado)}</td>
-                <td className={`px-2 py-2.5 text-center font-mono border border-slate-300 tabular-nums ${resumoMensal.saldo >= 0 ? 'text-green-700' : 'text-red-700'}`}>
+              <tr className="bg-slate-100 border-t-2 border-slate-400 font-bold text-[11px] print:text-[11px] print:leading-snug print:font-extrabold">
+                <td colSpan={colSpanTotalFolha} className="px-3 py-2.5 text-right text-gray-700 border border-slate-300 sticky left-0 bg-slate-100 print:static print:px-1.5 print:py-0.5">Total do Mês:</td>
+                <td className="px-2 py-2.5 text-center font-mono text-gray-900 border border-slate-300 tabular-nums print:px-1.5 print:py-0.5">{formatarDuracaoPonto(resumoMensal.totalTrabalhado)}</td>
+                <td className={`ponto-espelho-col-saldo px-2 py-2.5 text-center font-mono border border-slate-300 tabular-nums print:px-2 print:py-0.5 ${resumoMensal.saldo >= 0 ? 'text-green-700' : 'text-red-700'}`}>
                   {resumoMensal.saldo > 0 ? '+' : ''}{formatarDuracaoPonto(resumoMensal.saldo)}
                 </td>
-                <td className="px-2 py-2.5 text-center border border-slate-300">
+                <td className="px-2 py-2.5 text-center border border-slate-300 print:hidden">
                   <Badge variant={resumoMensal.saldo >= 0 ? 'success' : 'danger'}>
                     {resumoMensal.saldo >= 0 ? 'Positivo' : 'Negativo'}
                   </Badge>
@@ -1061,11 +1401,83 @@ export const PontoEspelho: React.FC<PontoEspelhoProps> = ({ modoRH = false }) =>
           </table>
         </div>
       </Card>
-        </>
+      </div>
+
+      {/* Rodapé com declarações — impressão / PDF */}
+      {colaboradorAtual && (
+        <div
+          id="ponto-espelho-print-footer"
+          className="ponto-espelho-rodape-impressao ponto-espelho-rodape-pagina border border-slate-400 border-t-0 bg-white print:text-[10.5px] print:font-semibold"
+        >
+          {temAjusteManualNoMes && (
+            <p className="text-[10px] font-semibold text-gray-700 leading-relaxed px-3 pt-2.5 pb-0">
+              <span className="font-bold">*</span> Horários marcados com asterisco foram lançados ou corrigidos manualmente pelo administrador/gestor.
+            </p>
+          )}
+          {espelhoEntradaSaida && (
+            <div className="ponto-espelho-declaracao mx-3 mt-1 mb-1 p-2 border border-slate-400 bg-slate-50 text-[10px] font-semibold text-gray-900 leading-relaxed text-justify">
+              <p className="font-extrabold uppercase tracking-wide text-[11px] mb-1 text-center">
+                Declaração — Intervalo Intrajornada Pré-Assinalado (Art. 74, § 2º da CLT)
+              </p>
+              <p>
+                O(A) colaborador(a) <strong>{colaboradorAtual.nome}</strong>, portador(a) do cargo de{' '}
+                <strong>{cargoColaboradorLabel}</strong>, vinculado(a) à empresa <strong>{nomeEmpresaFolha}</strong>,
+                declara que o controle de frequência é realizado mediante registro exclusivo dos horários de entrada
+                e saída da jornada de trabalho, sendo o intervalo intrajornada de{' '}
+                <strong>2 (duas) horas</strong> previamente assinalado no sistema eletrônico de ponto, na forma
+                autorizada pela legislação trabalhista vigente.
+              </p>
+              <p className="mt-1">
+                Declara, ainda, que durante o período de referência usufruiu integralmente o intervalo
+                intrajornada pré-assinalado, salvo se houver comunicado formal à empresa ou registro em
+                contrário devidamente formalizado junto ao setor de Recursos Humanos.
+              </p>
+              <p className="mt-1">
+                Declara, por fim, que os horários constantes nesta folha de ponto referente ao período de{' '}
+                <span className="capitalize font-semibold">{nomeMes}</span> correspondem à jornada de trabalho
+                efetivamente cumprida, comprometendo-se a comunicar imediatamente ao setor de Recursos Humanos
+                qualquer divergência identificada, para os devidos fins de registro e controle.
+              </p>
+            </div>
+          )}
+
+          {!espelhoEntradaSaida && (
+          <div className="ponto-espelho-declaracao mx-3 mt-1 mb-1 border border-slate-400 bg-slate-50 px-3 py-2">
+            <p className="font-extrabold uppercase tracking-wide text-[10.5px] mb-1 text-center">Declaração do Colaborador</p>
+            <p className="text-[10px] font-semibold text-gray-900 leading-relaxed text-justify">
+              O(A) colaborador(a) <strong>{colaboradorAtual?.nome}</strong>, portador(a) do cargo de{' '}
+              <strong>{cargoColaboradorLabel}</strong>, declara ter conferido os registros de ponto constantes
+              nesta folha referente ao período de{' '}
+              <span className="capitalize font-semibold">{nomeMes}</span>, confirmando que os horários
+              de entrada, intervalo intrajornada e saída correspondem à jornada efetivamente cumprida,
+              salvo se houver comunicado formal à empresa ou registro em contrário. Eventuais divergências
+              devem ser comunicadas ao setor de Recursos Humanos no prazo legal, nos termos da Consolidação
+              das Leis do Trabalho.
+            </p>
+          </div>
+          )}
+
+          {/* Bloco de assinaturas — aparece após as declarações */}
+          {blocoAssinaturasFolhaImpressao}
+
+          <div className="ponto-espelho-rodape-documento border-t border-slate-400 px-3 py-1.5 flex items-center justify-between gap-3 bg-slate-50">
+            <p className="text-[8px] font-medium text-gray-600 leading-snug text-left">
+              Documento gerado em {dataImpressaoFolha}
+            </p>
+            <p className="text-[8px] font-semibold text-gray-700 text-center flex-1 truncate uppercase tracking-wide">
+              {nomeEmpresaFolha}
+            </p>
+            <p className="text-[8px] font-extrabold uppercase tracking-wide text-slate-700 text-right shrink-0">
+              {APEX_PLAN_NAME}
+            </p>
+          </div>
+        </div>
       )}
 
+      </div>
+
       {activeTab === 'graficos' && (
-        <Card className="p-5 border border-gray-200/80 shadow-sm bg-white dark:bg-slate-900">
+        <Card className="p-5 border border-gray-200/80 shadow-sm bg-white dark:bg-slate-900 print:hidden">
           <div className="mb-4">
             <h3 className="font-bold text-gray-800 dark:text-white text-base">Acompanhamento Diário de Horas</h3>
             <p className="text-xs text-gray-450 mt-0.5">Gráfico diário de horas trabalhadas vs meta de horas requerida no mês</p>
@@ -1149,6 +1561,449 @@ export const PontoEspelho: React.FC<PontoEspelhoProps> = ({ modoRH = false }) =>
           </div>
         )}
       </Modal>
+
+      <style dangerouslySetInnerHTML={{ __html: `
+        #ponto-espelho-print-root .ponto-espelho-somente-impressao,
+        #ponto-espelho-print-root .ponto-espelho-rodape-impressao,
+        #ponto-espelho-print-root .ponto-espelho-assinaturas-impressao {
+          display: none;
+        }
+        body.captura-folha-ponto-ativa {
+          background: white !important;
+          overflow: hidden !important;
+        }
+        @page {
+          size: A4 portrait;
+          margin: 2mm 5mm 4mm;
+        }
+        @media print {
+          html, body {
+            height: auto !important;
+            overflow: visible !important;
+            background: white !important;
+            margin: 0 !important;
+            padding: 0 !important;
+          }
+          body > * {
+            margin: 0 !important;
+            padding: 0 !important;
+          }
+          .print\\:hidden,
+          .no-print {
+            display: none !important;
+          }
+          #ponto-espelho-print-root {
+            position: static !important;
+            left: auto !important;
+            top: auto !important;
+            width: 100% !important;
+            min-height: auto !important;
+            height: auto !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            background: white !important;
+            display: block !important;
+            overflow: visible !important;
+            page-break-after: avoid !important;
+            -webkit-print-color-adjust: exact;
+            print-color-adjust: exact;
+          }
+          #ponto-espelho-print-root .ponto-espelho-somente-impressao,
+          #ponto-espelho-print-root .ponto-espelho-rodape-impressao,
+          #ponto-espelho-print-footer .ponto-espelho-assinaturas-impressao,
+          #ponto-espelho-print-root .ponto-espelho-assinaturas-impressao,
+          #ponto-espelho-print-footer {
+            display: block !important;
+            visibility: visible !important;
+            page-break-before: avoid !important;
+            break-before: avoid-page !important;
+          }
+          #ponto-espelho-print-root .ponto-espelho-assinaturas-impressao,
+          #ponto-espelho-print-footer .ponto-espelho-assinaturas-impressao {
+            page-break-inside: avoid !important;
+            break-inside: avoid-page !important;
+            margin-top: 14px !important;
+            padding-top: 4px !important;
+          }
+          #ponto-espelho-print-root > .hidden.print\\:block {
+            display: block !important;
+            visibility: visible !important;
+          }
+          #ponto-espelho-print-root .ponto-espelho-cabecalho-top {
+            display: flex !important;
+            align-items: center !important;
+            gap: 6px !important;
+            padding: 2px 6px !important;
+          }
+          #ponto-espelho-print-root .ponto-espelho-logo {
+            display: block !important;
+            height: 30px !important;
+            max-width: 96px !important;
+            width: auto !important;
+            object-fit: contain !important;
+          }
+          #ponto-espelho-print-root .ponto-espelho-marca-sistema {
+            display: block !important;
+            min-width: 64px !important;
+          }
+          #ponto-espelho-print-root .ponto-espelho-marca-sistema p:first-child {
+            font-size: 9px !important;
+            font-weight: 800 !important;
+          }
+          #ponto-espelho-print-root .ponto-espelho-marca-sistema p:last-child {
+            font-size: 7.5px !important;
+            font-weight: 600 !important;
+          }
+          #ponto-espelho-print-root .ponto-espelho-somente-impressao h1 {
+            font-size: 13px !important;
+            margin-top: 0 !important;
+            line-height: 1.15 !important;
+          }
+          #ponto-espelho-print-root .ponto-espelho-somente-impressao .grid {
+            padding-top: 2px !important;
+            padding-bottom: 2px !important;
+            gap: 0 8px !important;
+            font-size: 9.5px !important;
+            line-height: 1.2 !important;
+          }
+          #ponto-espelho-print-root .ponto-espelho-somente-impressao .grid.grid-cols-5 > div {
+            padding-top: 2px !important;
+            padding-bottom: 2px !important;
+          }
+          #ponto-espelho-print-root .ponto-espelho-somente-impressao .grid.grid-cols-5 p:first-child {
+            font-size: 8.5px !important;
+          }
+          #ponto-espelho-print-root .ponto-espelho-somente-impressao .grid.grid-cols-5 p:last-child {
+            font-size: 13px !important;
+          }
+          #ponto-espelho-print-root table:not(#ponto-espelho-assinaturas):not(.ponto-espelho-assinaturas-tabela) {
+            width: 100% !important;
+            max-width: 100% !important;
+            table-layout: fixed !important;
+            border-collapse: collapse !important;
+            box-sizing: border-box !important;
+            font-size: 11px !important;
+            font-weight: 600 !important;
+            page-break-inside: auto !important;
+          }
+          #ponto-espelho-print-root .ponto-espelho-col-saldo {
+            min-width: 3.2rem !important;
+            padding-right: 6px !important;
+            padding-left: 4px !important;
+            white-space: nowrap !important;
+            overflow: visible !important;
+          }
+          #ponto-espelho-print-root .ponto-espelho-tabela-scroll {
+            overflow: visible !important;
+            max-width: 100% !important;
+          }
+          #ponto-espelho-print-root thead th {
+            font-size: 10px !important;
+            font-weight: 800 !important;
+            padding: 2px 4px !important;
+            line-height: 1.15 !important;
+            background: #f1f5f9 !important;
+            color: #0f172a !important;
+            border: 1px solid #94a3b8 !important;
+          }
+          #ponto-espelho-print-root tbody td,
+          #ponto-espelho-print-root tfoot td {
+            padding: 1px 4px !important;
+            line-height: 1.2 !important;
+            vertical-align: middle !important;
+            border: 1px solid #cbd5e1 !important;
+            font-size: 11px !important;
+            font-weight: 600 !important;
+            color: #0f172a !important;
+          }
+          #ponto-espelho-print-root tfoot td {
+            font-weight: 800 !important;
+            font-size: 11px !important;
+          }
+          #ponto-espelho-print-root tbody td.font-mono,
+          #ponto-espelho-print-root tfoot td.font-mono {
+            font-weight: 700 !important;
+          }
+          .ponto-espelho-assinaturas-container {
+            display: flex !important;
+            flex-direction: row !important;
+            gap: 2.5rem !important;
+            margin-bottom: 8px !important;
+          }
+          .ponto-espelho-assinaturas-container > div {
+            flex: 1 1 0% !important;
+            min-width: 0 !important;
+            text-align: center !important;
+          }
+          .ponto-espelho-linha-assinatura {
+            border-bottom: 2px solid #1e293b !important;
+            height: 28px !important;
+            margin-bottom: 2px !important;
+          }
+          .ponto-espelho-dados-assinatura {
+            font-size: 10px !important;
+            font-weight: 700 !important;
+            line-height: 1.3 !important;
+            color: #0f172a !important;
+          }
+          #ponto-espelho-print-footer {
+            margin-top: 0 !important;
+            padding-top: 4px !important;
+            display: block !important;
+            visibility: visible !important;
+            page-break-before: auto !important;
+            break-before: auto !important;
+            page-break-inside: auto !important;
+            break-inside: auto !important;
+            font-size: 10.5px !important;
+            font-weight: 600 !important;
+            color: #0f172a !important;
+          }
+          #ponto-espelho-print-footer .ponto-espelho-declaracao {
+            margin-left: 0.4rem !important;
+            margin-right: 0.4rem !important;
+            margin-top: 2px !important;
+            margin-bottom: 2px !important;
+            padding: 4px 6px !important;
+            font-size: 9px !important;
+            line-height: 1.28 !important;
+            flex: 0 0 auto !important;
+          }
+          #ponto-espelho-print-footer .ponto-espelho-declaracao p {
+            font-size: 9px !important;
+            line-height: 1.28 !important;
+          }
+          #ponto-espelho-print-footer .ponto-espelho-local-data {
+            margin-left: 0.4rem !important;
+            margin-right: 0.4rem !important;
+            margin-top: 6px !important;
+            margin-bottom: 6px !important;
+            font-size: 10px !important;
+            flex: 0 0 auto !important;
+          }
+          #ponto-espelho-print-footer .ponto-espelho-local-data span {
+            font-weight: 700 !important;
+          }
+          #ponto-espelho-print-footer .ponto-espelho-rodape-documento {
+            display: flex !important;
+            align-items: center !important;
+            justify-content: space-between !important;
+            gap: 6px !important;
+            margin: 0 !important;
+            padding: 4px 8px !important;
+            background: #f8fafc !important;
+            border-top: 1px solid #94a3b8 !important;
+            flex: 0 0 auto !important;
+          }
+          #ponto-espelho-print-footer .ponto-espelho-rodape-documento p {
+            font-size: 8.5px !important;
+            line-height: 1.25 !important;
+            margin: 0 !important;
+          }
+          #ponto-espelho-print-footer .ponto-espelho-rodape-documento p:last-child {
+            font-weight: 800 !important;
+            letter-spacing: 0.04em !important;
+          }
+          #ponto-espelho-print-footer strong,
+          #ponto-espelho-print-footer .font-bold,
+          #ponto-espelho-print-footer .font-extrabold {
+            font-weight: 800 !important;
+          }
+          #ponto-espelho-print-root .print\\:hidden,
+          .no-print { display: none !important; }
+        }
+        #ponto-espelho-print-root.captura-pdf-ativa {
+          position: absolute !important;
+          left: 0 !important;
+          top: 0 !important;
+          width: 794px !important;
+          min-height: auto !important;
+          height: auto !important;
+          margin: 0 !important;
+          padding: 2px 10px 4px !important;
+          background: white !important;
+          border: none !important;
+          box-sizing: border-box !important;
+          overflow: visible !important;
+          z-index: 99999 !important;
+          display: block !important;
+        }
+        #ponto-espelho-print-root.captura-pdf-ativa > * + * {
+          margin-top: 0 !important;
+        }
+        #ponto-espelho-print-root.captura-pdf-ativa .ponto-espelho-somente-impressao,
+        #ponto-espelho-print-root.captura-pdf-ativa .ponto-espelho-rodape-impressao,
+        #ponto-espelho-print-root.captura-pdf-ativa .ponto-espelho-assinaturas-impressao,
+        #ponto-espelho-print-root.captura-pdf-ativa #ponto-espelho-print-footer .ponto-espelho-assinaturas-impressao,
+        #ponto-espelho-print-root.captura-pdf-ativa #ponto-espelho-print-footer {
+          display: block !important;
+          visibility: visible !important;
+          opacity: 1 !important;
+        }
+        #ponto-espelho-print-root.captura-pdf-ativa .overflow-hidden {
+          overflow: visible !important;
+        }
+        #ponto-espelho-print-root.captura-pdf-ativa .print\\:hidden {
+          display: none !important;
+        }
+        /* Pares "hidden / print:inline" (rótulos só de impressão) só ativam dentro de
+           @media print de verdade — durante a captura do PDF (fora do @media print) os
+           dois lados ficavam escondidos e a célula saía em branco. Reaplica aqui. */
+        #ponto-espelho-print-root.captura-pdf-ativa .hidden.print\\:inline {
+          display: inline !important;
+        }
+        #ponto-espelho-print-root.captura-pdf-ativa .hidden.print\\:block {
+          display: block !important;
+        }
+        /* thead/tfoot "sticky" (para rolagem em tela) ficava ativo durante a captura
+           e o cabeçalho era desenhado por cima das linhas da tabela (texto sobre texto). */
+        #ponto-espelho-print-root.captura-pdf-ativa thead,
+        #ponto-espelho-print-root.captura-pdf-ativa tfoot,
+        #ponto-espelho-print-root.captura-pdf-ativa th,
+        #ponto-espelho-print-root.captura-pdf-ativa td {
+          position: static !important;
+          top: auto !important;
+          left: auto !important;
+          bottom: auto !important;
+          z-index: auto !important;
+        }
+        /* O wrapper com scroll/altura máxima da tabela (uso em tela) recortava o
+           conteúdo durante a captura, deixando a folha apertada/cortada. */
+        #ponto-espelho-print-root.captura-pdf-ativa .ponto-espelho-tabela-scroll {
+          max-height: none !important;
+          overflow: visible !important;
+        }
+        #ponto-espelho-print-root.captura-pdf-ativa .ponto-espelho-cabecalho-top {
+          display: flex !important;
+          align-items: center !important;
+          gap: 6px !important;
+          padding: 2px 6px !important;
+        }
+        #ponto-espelho-print-root.captura-pdf-ativa .ponto-espelho-logo {
+          display: block !important;
+          height: 30px !important;
+          max-width: 96px !important;
+          width: auto !important;
+          object-fit: contain !important;
+        }
+        #ponto-espelho-print-root.captura-pdf-ativa .ponto-espelho-marca-sistema {
+          display: block !important;
+        }
+        #ponto-espelho-print-root.captura-pdf-ativa .ponto-espelho-marca-sistema p:first-child {
+          font-size: 9px !important;
+          font-weight: 800 !important;
+        }
+        #ponto-espelho-print-root.captura-pdf-ativa .ponto-espelho-marca-sistema p:last-child {
+          font-size: 7.5px !important;
+          font-weight: 600 !important;
+        }
+        #ponto-espelho-print-root.captura-pdf-ativa .ponto-espelho-somente-impressao h1 {
+          font-size: 13px !important;
+          line-height: 1.15 !important;
+        }
+        #ponto-espelho-print-root.captura-pdf-ativa .ponto-espelho-somente-impressao .grid {
+          font-size: 9.5px !important;
+          padding-top: 2px !important;
+          padding-bottom: 2px !important;
+          line-height: 1.2 !important;
+        }
+        #ponto-espelho-print-root.captura-pdf-ativa .ponto-espelho-somente-impressao .grid.grid-cols-5 p:last-child {
+          font-size: 13px !important;
+        }
+        #ponto-espelho-print-root.captura-pdf-ativa .ponto-espelho-rodape-documento {
+          display: flex !important;
+          align-items: center !important;
+          justify-content: space-between !important;
+          padding: 4px 8px !important;
+          background: #f8fafc !important;
+        }
+        #ponto-espelho-print-root.captura-pdf-ativa .ponto-espelho-rodape-documento p {
+          font-size: 8.5px !important;
+        }
+        #ponto-espelho-print-root.captura-pdf-ativa table:not(#ponto-espelho-assinaturas) {
+          width: 100% !important;
+          max-width: 100% !important;
+          table-layout: fixed !important;
+          border-collapse: collapse !important;
+          box-sizing: border-box !important;
+          font-size: 11px !important;
+          font-weight: 600 !important;
+        }
+        #ponto-espelho-print-root.captura-pdf-ativa .ponto-espelho-col-saldo {
+          min-width: 3.2rem !important;
+          padding-right: 6px !important;
+          padding-left: 4px !important;
+          white-space: nowrap !important;
+          overflow: visible !important;
+        }
+        #ponto-espelho-print-root.captura-pdf-ativa thead th {
+          font-size: 10px !important;
+          font-weight: 800 !important;
+          padding: 2px 4px !important;
+          line-height: 1.15 !important;
+          background: #f1f5f9 !important;
+          color: #0f172a !important;
+          border: 1px solid #94a3b8 !important;
+        }
+        #ponto-espelho-print-root.captura-pdf-ativa tbody td,
+        #ponto-espelho-print-root.captura-pdf-ativa tfoot td {
+          padding: 1px 4px !important;
+          line-height: 1.2 !important;
+          vertical-align: middle !important;
+          border: 1px solid #cbd5e1 !important;
+          font-size: 11px !important;
+          font-weight: 600 !important;
+          color: #0f172a !important;
+        }
+        #ponto-espelho-print-root.captura-pdf-ativa tfoot td {
+          font-size: 11px !important;
+          font-weight: 800 !important;
+        }
+        #ponto-espelho-print-root.captura-pdf-ativa #ponto-espelho-print-footer {
+          font-size: 10.5px !important;
+          font-weight: 600 !important;
+        }
+        #ponto-espelho-print-root.captura-pdf-ativa #ponto-espelho-print-footer .ponto-espelho-declaracao,
+        #ponto-espelho-print-root.captura-pdf-ativa #ponto-espelho-print-footer .ponto-espelho-declaracao p {
+          font-size: 9px !important;
+          line-height: 1.28 !important;
+          padding: 4px 6px !important;
+          margin-top: 2px !important;
+          margin-bottom: 2px !important;
+        }
+        #ponto-espelho-print-root.captura-pdf-ativa .ponto-espelho-assinaturas-impressao,
+        #ponto-espelho-print-root.captura-pdf-ativa #ponto-espelho-print-footer .ponto-espelho-assinaturas-impressao {
+          margin-top: 14px !important;
+          padding-top: 4px !important;
+        }
+        #ponto-espelho-print-root.captura-pdf-ativa #ponto-espelho-print-footer .ponto-espelho-local-data {
+          margin-top: 6px !important;
+          margin-bottom: 6px !important;
+        }
+        #ponto-espelho-print-root.captura-pdf-ativa .ponto-espelho-assinaturas-container {
+          display: flex !important;
+          flex-direction: row !important;
+          gap: 2.5rem !important;
+          margin-bottom: 8px !important;
+        }
+        #ponto-espelho-print-root.captura-pdf-ativa .ponto-espelho-assinaturas-container > div {
+          flex: 1 1 0% !important;
+          text-align: center !important;
+        }
+        #ponto-espelho-print-root.captura-pdf-ativa .ponto-espelho-linha-assinatura {
+          border-bottom: 2px solid #1e293b !important;
+          height: 28px !important;
+          margin-bottom: 2px !important;
+        }
+        #ponto-espelho-print-root.captura-pdf-ativa .ponto-espelho-dados-assinatura {
+          font-size: 10px !important;
+          font-weight: 700 !important;
+          line-height: 1.3 !important;
+        }
+        #ponto-espelho-print-root.captura-pdf-ativa table tbody tr:nth-child(even) {
+          background: #f8fafc !important;
+        }
+      ` }} />
     </div>
   );
 };

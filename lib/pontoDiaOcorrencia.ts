@@ -1,4 +1,10 @@
-export type PontoDiaOcorrenciaTipo = 'folga' | 'atestado' | 'feriado' | 'jornada_normal' | 'hora_extra';
+export type PontoDiaOcorrenciaTipo =
+  | 'folga'
+  | 'atestado'
+  | 'feriado'
+  | 'jornada_normal'
+  | 'hora_extra'
+  | 'bonificacao';
 
 export type PontoDiaOcorrencia = {
   id: string;
@@ -13,6 +19,7 @@ export const LABEL_OCORRENCIA_PONTO: Record<PontoDiaOcorrenciaTipo, string> = {
   feriado: 'Feriado',
   jornada_normal: 'Jornada Normal',
   hora_extra: 'Hora Extra',
+  bonificacao: 'Bonificação',
 };
 
 export function mapaOcorrenciasPorDia(
@@ -46,11 +53,17 @@ export function isDiaHoraExtraManual(ocorrencia?: PontoDiaOcorrencia | null): bo
   return ocorrencia?.tipo === 'hora_extra';
 }
 
+/** Liberação antecipada / compensação com batidas preservadas (ex.: saída para evento). */
+export function isDiaBonificado(ocorrencia?: PontoDiaOcorrencia | null): boolean {
+  return ocorrencia?.tipo === 'bonificacao';
+}
+
 export function isDiaJustificadoPorOcorrencia(ocorrencia?: PontoDiaOcorrencia | null): boolean {
   return (
     isDiaFolgaManual(ocorrencia) ||
     isDiaAtestado(ocorrencia) ||
     isDiaFeriadoManual(ocorrencia) ||
-    isDiaHoraExtraManual(ocorrencia)
+    isDiaHoraExtraManual(ocorrencia) ||
+    isDiaBonificado(ocorrencia)
   );
 }

@@ -199,7 +199,7 @@ export async function removerOcorrenciaDiaPonto(params: {
   if (error) throw error;
 }
 
-/** Marca o dia como folga ou atestado e remove batidas existentes. */
+/** Marca o dia com ocorrência do RH. Folga/atestado removem batidas; bonificação preserva. */
 export async function salvarOcorrenciaDiaPonto(params: {
   empresaId: string;
   userIdColaborador: string;

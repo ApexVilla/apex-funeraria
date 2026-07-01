@@ -1,11 +1,16 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { ArrowLeft, Save } from 'lucide-react';
+import { AlertCircle, ArrowLeft, Save } from 'lucide-react';
 import { PageHeader } from '../../components/common/PageHeader';
 import { Button, Card, Input, Select, Textarea } from '../../components/ui/Components';
 import { useToast } from '../../lib/ToastStore';
 import { useAuth } from '../../lib/AuthContext';
 import { useEmpresaContextoAtivo } from '../../lib/EmpresaContextoAtivo';
+import {
+    buscarFornecedorDuplicado,
+    mensagemFornecedorDuplicado,
+    type FornecedorDuplicadoInfo,
+} from '../../lib/fornecedorDuplicidade';
 import { supabase } from '../../lib/supabase';
 import { buscarEnderecoPorCep, cepSomenteDigitos, formatCepInput } from '../../lib/viaCep';
 
@@ -19,6 +24,8 @@ export const EstoqueFornecedorForm: React.FC = () => {
     const isEdit = Boolean(fornecedorId);
     const [loading, setLoading] = useState(false);
     const [cepLoading, setCepLoading] = useState(false);
+    const [validandoDuplicado, setValidandoDuplicado] = useState(false);
+    const [fornecedorDuplicado, setFornecedorDuplicado] = useState<FornecedorDuplicadoInfo | null>(null);
     const cepAbortRef = useRef<AbortController | null>(null);
     const [codigo, setCodigo] = useState('');
     const [form, setForm] = useState({
@@ -145,6 +152,45 @@ export const EstoqueFornecedorForm: React.FC = () => {
         };
     }, []);
 
+    useEffect(() => {
+        if (!empresaIdOperacao) {
+            setFornecedorDuplicado(null);
+            return;
+        }
+
+        const documentoDigits = form.documento.replace(/\D/g, '');
+        const nomePreenchido = form.nome.trim().length >= 3;
+        const documentoCompleto = documentoDigits.length === 11 || documentoDigits.length === 14;
+        if (!documentoCompleto && !nomePreenchido) {
+            setFornecedorDuplicado(null);
+            return;
+        }
+
+        let cancelado = false;
+        const timer = setTimeout(async () => {
+            setValidandoDuplicado(true);
+            try {
+                const duplicado = await buscarFornecedorDuplicado({
+                    documento: form.documento,
+                    nome: form.nome,
+                    empresaId: empresaIdOperacao,
+                    excluirFornecedorId: isEdit ? fornecedorId : null,
+                });
+                if (!cancelado) setFornecedorDuplicado(duplicado);
+            } catch (err) {
+                console.warn('[EstoqueFornecedorForm] duplicidade:', err);
+                if (!cancelado) setFornecedorDuplicado(null);
+            } finally {
+                if (!cancelado) setValidandoDuplicado(false);
+            }
+        }, 400);
+
+        return () => {
+            cancelado = true;
+            clearTimeout(timer);
+        };
+    }, [empresaIdOperacao, form.documento, form.nome, fornecedorId, isEdit]);
+
     const preencherEnderecoPorCep = async (cepRaw: string) => {
         const digits = cepSomenteDigitos(cepRaw);
         if (digits.length !== 8) return;
@@ -215,6 +261,18 @@ export const EstoqueFornecedorForm: React.FC = () => {
         }
         if (!form.logradouro.trim() || !form.numero.trim() || !form.bairro.trim() || !form.cidade.trim() || !form.estado.trim()) {
             showToast('Preencha o endereço completo do fornecedor.', 'warning');
+            return;
+        }
+
+        const duplicado = await buscarFornecedorDuplicado({
+            documento: form.documento,
+            nome: form.nome,
+            empresaId: empresaIdOperacao,
+            excluirFornecedorId: isEdit ? fornecedorId : null,
+        });
+        if (duplicado) {
+            setFornecedorDuplicado(duplicado);
+            showToast(mensagemFornecedorDuplicado(duplicado), 'warning');
             return;
         }
 
@@ -295,6 +353,35 @@ export const EstoqueFornecedorForm: React.FC = () => {
                 {!isEdit && (
                     <div className="rounded-lg border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-700">
                         O código do fornecedor será gerado automaticamente ao salvar.
+                    </div>
+                )}
+                {(validandoDuplicado || fornecedorDuplicado) && (
+                    <div className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3">
+                        <div className="flex items-start gap-2">
+                            <AlertCircle className="h-5 w-5 mt-0.5 shrink-0 text-amber-600" />
+                            <div className="flex-1 space-y-2">
+                                <p className="text-sm font-semibold text-amber-900">
+                                    Fornecedor já cadastrado
+                                </p>
+                                {validandoDuplicado ? (
+                                    <p className="text-xs text-amber-700">Verificando cadastro existente...</p>
+                                ) : fornecedorDuplicado ? (
+                                    <>
+                                        <p className="text-xs text-amber-800">
+                                            {mensagemFornecedorDuplicado(fornecedorDuplicado)}
+                                        </p>
+                                        <Button
+                                            type="button"
+                                            variant="outline"
+                                            size="sm"
+                                            onClick={() => navigate(`/estoque/fornecedores/${fornecedorDuplicado.id}/editar`)}
+                                        >
+                                            Abrir cadastro existente
+                                        </Button>
+                                    </>
+                                ) : null}
+                            </div>
+                        </div>
                     </div>
                 )}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -413,7 +500,11 @@ export const EstoqueFornecedorForm: React.FC = () => {
                 />
                 <div className="flex justify-end gap-2 pt-2">
                     <Button variant="outline" onClick={() => navigate('/estoque/fornecedores')}>Cancelar</Button>
-                    <Button onClick={handleSave} loading={loading}>
+                    <Button
+                        onClick={handleSave}
+                        loading={loading}
+                        disabled={Boolean(fornecedorDuplicado) || validandoDuplicado}
+                    >
                         <Save className="h-4 w-4 mr-2" />
                         Salvar Fornecedor
                     </Button>

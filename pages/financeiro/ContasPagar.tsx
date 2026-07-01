@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState, useCallback } from 'react';
 import { Search, Plus, CreditCard, FileText, CheckCircle, Undo2, Trash2, Pencil, X, Save, AlertCircle, Printer, RefreshCw, Loader2, Filter, AlertTriangle, TrendingDown, Calendar, DollarSign, Layers, BarChart2 } from 'lucide-react';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, PieChart, Pie, Cell, ResponsiveContainer, Legend, ComposedChart, Line } from 'recharts';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, PieChart, Pie, Cell, ResponsiveContainer, Legend, ComposedChart, Line, LabelList } from 'recharts';
 import { imprimirReciboContaPagar } from '../../lib/ReciboService';
 import { useAuth } from '../../lib/AuthContext';
 import jsPDF from 'jspdf';
@@ -85,6 +85,37 @@ const EMPTY_COLUMN_FILTERS: Record<ColumnFilterKey, string[]> = {
 
 const formatDataBr = (iso?: string | null) =>
     iso ? new Date(iso + 'T00:00').toLocaleDateString('pt-BR') : '—';
+
+const CHART_ROW_HEIGHT = 50;
+
+type ChartCategoryTickProps = {
+    x?: number;
+    y?: number;
+    payload?: { value?: string };
+    maxChars?: number;
+};
+
+const ChartCategoryTick = ({ x = 0, y = 0, payload, maxChars = 32 }: ChartCategoryTickProps) => {
+    const raw = String(payload?.value ?? '');
+    const label = raw.length > maxChars ? `${raw.slice(0, maxChars - 1)}…` : raw;
+    return (
+        <text
+            x={x}
+            y={y}
+            dy={5}
+            textAnchor="end"
+            fill="#1e293b"
+            fontSize={12}
+            fontWeight={700}
+            fontFamily="system-ui, -apple-system, sans-serif"
+        >
+            {label}
+        </text>
+    );
+};
+
+const chartValorLabel = (value: number) =>
+    formatCentavos(value);
 
 const parseValorFiltroCentavos = (input: string): number | null => {
     const raw = input.replace(/\D/g, '');
@@ -2012,16 +2043,16 @@ export const ContasPagar: React.FC = () => {
                             <h3 className="text-sm font-bold text-gray-900">Por Tipo de Documento</h3>
                             <p className="text-[11px] text-gray-400 mt-0.5 mb-4">Top 10 tipos por valor total (R$)</p>
                             {dadosGraficos.porTipo.length > 0 ? (
-                                <ResponsiveContainer width="100%" height={dadosGraficos.porTipo.length * 36 + 20}>
+                                <ResponsiveContainer width="100%" height={dadosGraficos.porTipo.length * CHART_ROW_HEIGHT + 32}>
                                     <BarChart
                                         data={dadosGraficos.porTipo}
                                         layout="vertical"
-                                        margin={{ top: 0, right: 16, left: 4, bottom: 0 }}
+                                        margin={{ top: 4, right: 72, left: 8, bottom: 4 }}
                                     >
                                         <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" horizontal={false} />
                                         <XAxis
                                             type="number"
-                                            tick={{ fontSize: 10 }}
+                                            tick={{ fontSize: 11, fill: '#64748b', fontWeight: 500 }}
                                             axisLine={false}
                                             tickLine={false}
                                             tickFormatter={(v) => `R$ ${(v / 100).toLocaleString('pt-BR', { maximumFractionDigits: 0 })}`}
@@ -2029,16 +2060,25 @@ export const ContasPagar: React.FC = () => {
                                         <YAxis
                                             type="category"
                                             dataKey="name"
-                                            tick={{ fontSize: 11 }}
+                                            tick={(props) => <ChartCategoryTick {...props} maxChars={18} />}
                                             axisLine={false}
                                             tickLine={false}
-                                            width={96}
+                                            width={130}
+                                            interval={0}
                                         />
                                         <RechartsTooltip
                                             formatter={(value: number) => [formatCentavos(value), 'Total']}
-                                            contentStyle={{ fontSize: 12, borderRadius: 8, border: '1px solid #e2e8f0' }}
+                                            labelStyle={{ fontWeight: 700, color: '#1e293b', marginBottom: 4 }}
+                                            contentStyle={{ fontSize: 13, borderRadius: 8, border: '1px solid #e2e8f0', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.08)' }}
                                         />
-                                        <Bar dataKey="valor" name="Total" fill="#8b5cf6" radius={[0, 4, 4, 0]} maxBarSize={22} />
+                                        <Bar dataKey="valor" name="Total" fill="#8b5cf6" radius={[0, 4, 4, 0]} maxBarSize={26}>
+                                            <LabelList
+                                                dataKey="valor"
+                                                position="right"
+                                                formatter={chartValorLabel}
+                                                style={{ fill: '#475569', fontSize: 11, fontWeight: 700 }}
+                                            />
+                                        </Bar>
                                     </BarChart>
                                 </ResponsiveContainer>
                             ) : (
@@ -2050,16 +2090,16 @@ export const ContasPagar: React.FC = () => {
                             <h3 className="text-sm font-bold text-gray-900">Por Natureza Financeira</h3>
                             <p className="text-[11px] text-gray-400 mt-0.5 mb-4">Top 10 categorias por valor total (R$)</p>
                             {dadosGraficos.porNatureza.length > 0 ? (
-                                <ResponsiveContainer width="100%" height={dadosGraficos.porNatureza.length * 36 + 20}>
+                                <ResponsiveContainer width="100%" height={dadosGraficos.porNatureza.length * CHART_ROW_HEIGHT + 32}>
                                     <BarChart
                                         data={dadosGraficos.porNatureza}
                                         layout="vertical"
-                                        margin={{ top: 0, right: 16, left: 4, bottom: 0 }}
+                                        margin={{ top: 4, right: 72, left: 8, bottom: 4 }}
                                     >
                                         <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" horizontal={false} />
                                         <XAxis
                                             type="number"
-                                            tick={{ fontSize: 10 }}
+                                            tick={{ fontSize: 11, fill: '#64748b', fontWeight: 500 }}
                                             axisLine={false}
                                             tickLine={false}
                                             tickFormatter={(v) => `R$ ${(v / 100).toLocaleString('pt-BR', { maximumFractionDigits: 0 })}`}
@@ -2067,16 +2107,25 @@ export const ContasPagar: React.FC = () => {
                                         <YAxis
                                             type="category"
                                             dataKey="name"
-                                            tick={{ fontSize: 11 }}
+                                            tick={(props) => <ChartCategoryTick {...props} maxChars={28} />}
                                             axisLine={false}
                                             tickLine={false}
-                                            width={110}
+                                            width={200}
+                                            interval={0}
                                         />
                                         <RechartsTooltip
                                             formatter={(value: number) => [formatCentavos(value), 'Total']}
-                                            contentStyle={{ fontSize: 12, borderRadius: 8, border: '1px solid #e2e8f0' }}
+                                            labelStyle={{ fontWeight: 700, color: '#1e293b', marginBottom: 4 }}
+                                            contentStyle={{ fontSize: 13, borderRadius: 8, border: '1px solid #e2e8f0', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.08)' }}
                                         />
-                                        <Bar dataKey="valor" name="Total" fill="#3b82f6" radius={[0, 4, 4, 0]} maxBarSize={22} />
+                                        <Bar dataKey="valor" name="Total" fill="#3b82f6" radius={[0, 4, 4, 0]} maxBarSize={26}>
+                                            <LabelList
+                                                dataKey="valor"
+                                                position="right"
+                                                formatter={chartValorLabel}
+                                                style={{ fill: '#475569', fontSize: 11, fontWeight: 700 }}
+                                            />
+                                        </Bar>
                                     </BarChart>
                                 </ResponsiveContainer>
                             ) : (
@@ -2090,16 +2139,16 @@ export const ContasPagar: React.FC = () => {
                         <h3 className="text-sm font-bold text-gray-900">Top Fornecedores por Valor</h3>
                         <p className="text-[11px] text-gray-400 mt-0.5 mb-4">Os 8 fornecedores com maior volume de contas a pagar no período</p>
                         {dadosGraficos.porFornecedor.length > 0 ? (
-                            <ResponsiveContainer width="100%" height={dadosGraficos.porFornecedor.length * 38 + 20}>
+                            <ResponsiveContainer width="100%" height={dadosGraficos.porFornecedor.length * CHART_ROW_HEIGHT + 32}>
                                 <BarChart
                                     data={dadosGraficos.porFornecedor}
                                     layout="vertical"
-                                    margin={{ top: 0, right: 24, left: 4, bottom: 0 }}
+                                    margin={{ top: 4, right: 80, left: 8, bottom: 4 }}
                                 >
                                     <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" horizontal={false} />
                                     <XAxis
                                         type="number"
-                                        tick={{ fontSize: 10 }}
+                                        tick={{ fontSize: 11, fill: '#64748b', fontWeight: 500 }}
                                         axisLine={false}
                                         tickLine={false}
                                         tickFormatter={(v) => `R$ ${(v / 100).toLocaleString('pt-BR', { maximumFractionDigits: 0 })}`}
@@ -2107,16 +2156,25 @@ export const ContasPagar: React.FC = () => {
                                     <YAxis
                                         type="category"
                                         dataKey="name"
-                                        tick={{ fontSize: 11 }}
+                                        tick={(props) => <ChartCategoryTick {...props} maxChars={36} />}
                                         axisLine={false}
                                         tickLine={false}
-                                        width={150}
+                                        width={280}
+                                        interval={0}
                                     />
                                     <RechartsTooltip
                                         formatter={(value: number) => [formatCentavos(value), 'Total']}
-                                        contentStyle={{ fontSize: 12, borderRadius: 8, border: '1px solid #e2e8f0' }}
+                                        labelStyle={{ fontWeight: 700, color: '#1e293b', marginBottom: 4 }}
+                                        contentStyle={{ fontSize: 13, borderRadius: 8, border: '1px solid #e2e8f0', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.08)' }}
                                     />
-                                    <Bar dataKey="valor" name="Total" fill="#dc2626" radius={[0, 4, 4, 0]} maxBarSize={24} />
+                                    <Bar dataKey="valor" name="Total" fill="#dc2626" radius={[0, 4, 4, 0]} maxBarSize={28}>
+                                        <LabelList
+                                            dataKey="valor"
+                                            position="right"
+                                            formatter={chartValorLabel}
+                                            style={{ fill: '#475569', fontSize: 11, fontWeight: 700 }}
+                                        />
+                                    </Bar>
                                 </BarChart>
                             </ResponsiveContainer>
                         ) : (

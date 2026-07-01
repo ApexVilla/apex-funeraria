@@ -143,10 +143,17 @@ export const FrotaMenu: React.FC = () => {
         },
         {
             icon: BarChart2,
+            label: 'Dashboard de Viagens',
+            path: '/frota/dashboard',
+            description: 'Gráficos e métricas analíticas das viagens por mês.',
+            color: '#6366f1'
+        },
+        {
+            icon: BarChart2,
             label: 'Relatórios de Frota',
             path: '/frota/relatorios',
             description: 'Custos, quilometragem, performance e gastos.',
-            color: '#6366f1'
+            color: '#0ea5e9'
         },
     ];
 

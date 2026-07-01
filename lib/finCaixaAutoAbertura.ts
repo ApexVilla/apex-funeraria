@@ -372,13 +372,35 @@ export async function ensureContasDestinoBaixa(params: {
     fila.push(conta);
   }
 
-  // Baixas em conta corrente/PIX sincronizam no caixa do operador — garantir sessão desse caixa também.
+  // Mesma regra das RPCs fin_baixar_conta_*: conta principal (PIX/boleto) + caixa do operador.
   const empresaId = await resolverEmpresaIdDasContas(params.contas);
-  if (empresaId && params.usuarioId) {
-    const caixaOp = await resolverCaixaOperadorEmpresa(empresaId, params.usuarioId);
-    if (caixaOp && !vistos.has(caixaOp.id)) {
-      vistos.add(caixaOp.id);
-      fila.push(caixaOp);
+  if (empresaId) {
+    const { data: principal, error: principalErr } = await supabase
+      .from('fin_contas_bancarias')
+      .select('id, nome, tipo')
+      .eq('empresa_id', empresaId)
+      .eq('principal', true)
+      .eq('ativo', true)
+      .order('created_at', { ascending: true })
+      .limit(1)
+      .maybeSingle();
+    if (principalErr) throw principalErr;
+
+    if (principal?.id && !vistos.has(principal.id) && contaExigeSessaoCaixa(principal.tipo)) {
+      vistos.add(principal.id);
+      fila.push({
+        id: String(principal.id),
+        nome: String(principal.nome),
+        tipo: principal.tipo,
+      });
+    }
+
+    if (params.usuarioId) {
+      const caixaOp = await resolverCaixaOperadorEmpresa(empresaId, params.usuarioId);
+      if (caixaOp && !vistos.has(caixaOp.id)) {
+        vistos.add(caixaOp.id);
+        fila.push(caixaOp);
+      }
     }
   }
 

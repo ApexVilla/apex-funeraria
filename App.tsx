@@ -102,6 +102,7 @@ const ManutencaoForm = lazy(() => import('./pages/frota/ManutencaoForm').then(m 
 const ViagemForm = lazy(() => import('./pages/frota/ViagemForm').then(m => ({ default: m.ViagemForm })));
 const OcorrenciasList = lazy(() => import('./pages/frota/OcorrenciasList').then(m => ({ default: m.OcorrenciasList })));
 const OcorrenciaForm = lazy(() => import('./pages/frota/OcorrenciaForm').then(m => ({ default: m.OcorrenciaForm })));
+const DashboardViagens = lazy(() => import('./pages/frota/DashboardViagens').then(m => ({ default: m.DashboardViagens })));
 
 const CobradoresMenu = lazy(() => import('./pages/cobradores/CobradoresMenu').then(m => ({ default: m.CobradoresMenu })));
 const CobradoresList = lazy(() => import('./pages/cobradores/CobradoresList').then(m => ({ default: m.CobradoresList })));
@@ -404,6 +405,7 @@ const App: React.FC = () => {
                 <Route path="/frota/ocorrencias/nova" element={<OcorrenciaForm />} />
                 <Route path="/frota/ocorrencias/:id" element={<OcorrenciaForm />} />
                 <Route path="/frota/ocorrencias/:id/editar" element={<OcorrenciaForm />} />
+                <Route path="/frota/dashboard" element={<DashboardViagens />} />
 
                 {/* Cobradores — rotas estáticas antes de /cobradores/:id para não capturar "carteira", "rotas", etc. */}
                 <Route path="/cobradores" element={<CobradoresIndexRoute />} />

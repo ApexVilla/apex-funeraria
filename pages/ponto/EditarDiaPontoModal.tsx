@@ -151,7 +151,8 @@ export const EditarDiaPontoModal: React.FC<Props> = ({
 
   const modoBtnCls = (value: ModoEdicaoDia) => {
     let activeCls = 'border-indigo-400 bg-indigo-50 text-indigo-800';
-    if (value === 'folga') activeCls = 'border-violet-400 bg-violet-50 text-violet-800';
+    if (value === 'bonificacao') activeCls = 'border-emerald-400 bg-emerald-50 text-emerald-800';
+    else if (value === 'folga') activeCls = 'border-violet-400 bg-violet-50 text-violet-800';
     else if (value === 'atestado') activeCls = 'border-sky-400 bg-sky-50 text-sky-800';
     else if (value === 'feriado') activeCls = 'border-amber-400 bg-amber-50 text-amber-800';
     else if (value === 'jornada_normal') activeCls = 'border-emerald-400 bg-emerald-50 text-emerald-800';
@@ -181,6 +182,9 @@ export const EditarDiaPontoModal: React.FC<Props> = ({
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
             <button type="button" className={modoBtnCls('horarios')} onClick={() => setModo('horarios')}>
               Horários
+            </button>
+            <button type="button" className={modoBtnCls('bonificacao')} onClick={() => setModo('bonificacao')}>
+              Bonificação
             </button>
             <button type="button" className={modoBtnCls('folga')} onClick={() => setModo('folga')}>
               Folga
@@ -231,7 +235,11 @@ export const EditarDiaPontoModal: React.FC<Props> = ({
         ) : (
           <p className="text-xs text-sky-900 bg-sky-50 border border-sky-200 rounded-lg px-3 py-2">
             O dia será marcado como <strong>{LABEL_OCORRENCIA_PONTO[modo]}</strong>.
-            {(modo === 'folga' || modo === 'atestado') ? ' Batidas existentes serão removidas e o dia não contará como falta.' : ' Batidas existentes neste dia serão preservadas.'}
+            {modo === 'bonificacao'
+              ? ' As batidas do dia serão mantidas e o saldo negativo não será cobrado (ex.: liberação antecipada para evento).'
+              : modo === 'folga' || modo === 'atestado'
+                ? ' Batidas existentes serão removidas e o dia não contará como falta.'
+                : ' Batidas existentes neste dia serão preservadas.'}
           </p>
         )}
 
@@ -240,7 +248,9 @@ export const EditarDiaPontoModal: React.FC<Props> = ({
           value={motivo}
           onChange={(e) => setMotivo(e.target.value)}
           placeholder={
-            modo === 'folga'
+            modo === 'bonificacao'
+              ? 'Ex.: liberação 13h — jogo de futebol (horas bonificadas)'
+              : modo === 'folga'
               ? 'Ex.: folga compensada, plantão trocado'
               : modo === 'atestado'
                 ? 'Ex.: atestado médico 1 dia, CID informado'

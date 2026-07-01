@@ -1,6 +1,11 @@
 import { usuarioPodeVerModulo } from './acessoModulos';
 import { lerAcaoPermissao } from './finCaixaPermissoes';
-import { horaFromTimestamp, type TipoBatida } from './pontoUtils';
+import {
+  calcularTrabalhadoMinutos,
+  horaFromTimestamp,
+  type BatidaPonto,
+  type TipoBatida,
+} from './pontoUtils';
 
 /** Máx. entre início do intervalo e 3ª batida para classificar como volta do almoço (AFD). */
 export const AFD_GAP_VOLTA_ALMOCO_MAX_MINUTOS = 180;
@@ -266,6 +271,79 @@ export function usaPontoApenasEntradaSaida(role?: string | null): boolean {
   return ROLES_PONTO_ENTRADA_SAIDA.includes(
     (role || '').toLowerCase() as (typeof ROLES_PONTO_ENTRADA_SAIDA)[number],
   );
+}
+
+/** Intervalo de almoço/descanso descontado automaticamente quando o cargo só registra entrada e saída. */
+export const INTERVALO_ALMOCO_IMPLICITO_ENTRADA_SAIDA_MINUTOS = 2 * 60;
+
+function isSabadoPonto(dataISO?: string | null): boolean {
+  const dia = String(dataISO ?? '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dia)) return false;
+  return new Date(`${dia}T12:00:00`).getDay() === 6;
+}
+
+/**
+ * Cobrador/vendedor: relógio AFD pode classificar 3–4 batidas com intervalo;
+ * na prática só há entrada e saída — usa 1ª e última marcação do dia.
+ */
+export function normalizarBatidasEntradaSaida(batidas: BatidaPonto[]): BatidaPonto[] {
+  if (!batidas.length) return batidas;
+  const ordenadas = [...batidas].sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+  if (ordenadas.length === 1) {
+    return [{ ...ordenadas[0], tipo: 'entrada' }];
+  }
+  return [
+    { ...ordenadas[0], tipo: 'entrada' },
+    { ...ordenadas[ordenadas.length - 1], tipo: 'saida' },
+  ];
+}
+
+/** Indica se o dia deve ter desconto automático de intervalo (sem batidas de intervalo registradas). Sábado não tem intervalo. */
+export function deveAplicarDescontoAlmocoImplicito(
+  batidas: BatidaPonto[],
+  role?: string | null,
+  dataISO?: string,
+): boolean {
+  if (!usaPontoApenasEntradaSaida(role)) return false;
+  if (isSabadoPonto(dataISO)) return false;
+  const norm = normalizarBatidasEntradaSaida(batidas);
+  const temEntrada = norm.some((b) => b.tipo === 'entrada');
+  const temSaida = norm.some((b) => b.tipo === 'saida');
+  return temEntrada && temSaida;
+}
+
+/** Minutos de intervalo implícito exibidos/descontados no dia (0 no sábado ou sem jornada fechada). */
+export function intervaloAlmocoImplicitoMinutosNoDia(
+  batidas: BatidaPonto[],
+  role?: string | null,
+  dataISO?: string,
+): number {
+  return deveAplicarDescontoAlmocoImplicito(batidas, role, dataISO)
+    ? INTERVALO_ALMOCO_IMPLICITO_ENTRADA_SAIDA_MINUTOS
+    : 0;
+}
+
+/** Horas efetivamente trabalhadas, com desconto de almoço implícito para cargos entrada/saída. */
+export function calcularTrabalhadoMinutosColaborador(
+  batidas: BatidaPonto[],
+  role?: string | null,
+  dataISO?: string,
+): number {
+  if (usaPontoApenasEntradaSaida(role)) {
+    const norm = normalizarBatidasEntradaSaida(batidas);
+    const bruto = calcularTrabalhadoMinutos(norm);
+    if (!deveAplicarDescontoAlmocoImplicito(batidas, role, dataISO)) return bruto;
+    return Math.max(0, bruto - INTERVALO_ALMOCO_IMPLICITO_ENTRADA_SAIDA_MINUTOS);
+  }
+  const bruto = calcularTrabalhadoMinutos(batidas);
+  return bruto;
+}
+
+export function labelCargoEntradaSaida(role?: string | null): string {
+  const r = (role || '').toLowerCase();
+  if (r === 'cobrador') return 'cobrador em campo';
+  if (r === 'vendedor') return 'vendedor externo';
+  return 'colaborador com registro apenas de entrada e saída';
 }
 
 export function ordemBatidasPonto(role?: string | null): TipoBatida[] {

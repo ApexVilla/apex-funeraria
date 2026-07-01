@@ -7,6 +7,8 @@ import { useToast } from '../../lib/ToastStore';
 import { Clock, Coffee, LogIn, LogOut, User, Briefcase, CalendarDays, ArrowRight, Camera, X, RefreshCw, WifiOff, CloudUpload } from 'lucide-react';
 import {
   getUserPontoConfig,
+  calcularTrabalhadoMinutosColaborador,
+  INTERVALO_ALMOCO_IMPLICITO_ENTRADA_SAIDA_MINUTOS,
   jornadaPontoFinalizada,
   labelRegimePonto,
   LABEL_TIPO_BATIDA,
@@ -22,7 +24,6 @@ import {
 import {
   type BatidaPonto,
   type TipoBatida,
-  calcularTrabalhadoMinutos,
   formatarDuracaoPonto,
   diaLocalFromTimestamp,
   formatarHoraPonto,
@@ -212,7 +213,10 @@ export const PontoRegistro: React.FC = () => {
   const proximaBatida: TipoBatida | undefined = proximaBatidaPonto(batidas, roleColaborador);
   const jornadaFinalizada = jornadaPontoFinalizada(batidas, roleColaborador);
 
-  const minutosTrabalhados = useMemo(() => calcularTrabalhadoMinutos(batidas), [batidas]);
+  const minutosTrabalhados = useMemo(
+    () => calcularTrabalhadoMinutosColaborador(batidas, roleColaborador, hoje),
+    [batidas, roleColaborador, hoje],
+  );
   const temBatidaHoje = batidas.some((b) => diaLocalFromTimestamp(b.timestamp) === hoje);
   const metaDiaHoje = metaMinutosNoDia(pontoConfig, hoje, temBatidaHoje);
   const folga12x36Hoje = isRegime12x36(pontoConfig) && metaDiaHoje === 0 && !temBatidaHoje;
@@ -540,7 +544,10 @@ export const PontoRegistro: React.FC = () => {
               {pontoEntradaSaida ? (
                 <>
                   Registre <strong>Entrada</strong> ao chegar e <strong>Saída</strong> ao encerrar o expediente.
-                  São duas marcações por dia.
+                  São duas marcações por dia. Nos dias úteis, o intervalo de almoço de{' '}
+                  <strong>{formatarDuracaoPonto(INTERVALO_ALMOCO_IMPLICITO_ENTRADA_SAIDA_MINUTOS)}</strong> é
+                  descontado automaticamente do total trabalhado — não é necessário bater ponto no intervalo.
+                  Nos sábados de plantão não há intervalo de almoço.
                 </>
               ) : (
                 <>

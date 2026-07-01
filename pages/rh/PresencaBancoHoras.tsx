@@ -23,6 +23,7 @@ import { listarColaboradoresPonto, type ColaboradorPonto } from '../../lib/ponto
 import {
   diaFechadoParaSaldoMensal,
   getUserPontoConfig,
+  calcularTrabalhadoMinutosColaborador,
   labelRegimePonto,
   normalizarBatidasAfdDia,
   usaPontoApenasEntradaSaida,
@@ -53,7 +54,6 @@ import {
   type TipoBatida,
   batidaEhAjusteManual,
   batidasDoTipo,
-  calcularTrabalhadoMinutos,
   consolidarEPrepararBatidasEspelho,
   diaLocalFromTimestamp,
   formatarDuracaoPonto,
@@ -66,6 +66,7 @@ import {
   margemDiasCargaPontoMes,
   opcoesConsolidacaoJornadaMultidia,
 } from '../../lib/ponto12x36Catalao';
+import { ordenarCargosPorHierarquia } from '../../lib/userRoles';
 import { EditarDiaPontoModal } from '../ponto/EditarDiaPontoModal';
 import { ImportarAfdModal } from './ImportarAfdModal';
 import {
@@ -94,6 +95,25 @@ import {
 } from 'lucide-react';
 
 type StatusHoje = 'trabalhando' | 'intervalo' | 'finalizado' | 'ausente' | 'folga' | 'ferias';
+
+const DEFAULT_ROLE_OPTIONS = [
+  { value: 'atendente', label: 'Atendente' },
+  { value: 'vendedor', label: 'Vendedor' },
+  { value: 'cobrador', label: 'Cobrador' },
+  { value: 'motorista', label: 'Motorista' },
+  { value: 'agente_funerario', label: 'Agente Funerário' },
+  { value: 'estoquista', label: 'Estoquista' },
+  { value: 'recepcao', label: 'Recepção' },
+  { value: 'auxiliar_servicos_gerais', label: 'Auxiliar de Serviços Gerais' },
+  { value: 'rh', label: 'Recursos Humanos (RH)' },
+  { value: 'financeiro', label: 'Financeiro' },
+  { value: 'supervisao', label: 'Supervisor' },
+  { value: 'gerente', label: 'Gerente' },
+  { value: 'gestor', label: 'Gestor' },
+  { value: 'diretoria', label: 'Diretoria' },
+  { value: 'gestao_executiva', label: 'Gestão Executiva' },
+  { value: 'admin', label: 'Administrador' },
+];
 
 interface ColaboradorStatusPonto {
   colab: ColaboradorPonto;
@@ -146,6 +166,28 @@ export const PresencaBancoHoras: React.FC = () => {
   const [saldoFilter, setSaldoFilter] = useState<string>('todos');
   const [departamentoFilter, setDepartamentoFilter] = useState<string>('todos');
   const [departamentos, setDepartamentos] = useState<{ id: string; nome: string }[]>([]);
+  const [cargoFilter, setCargoFilter] = useState<string>('todos');
+  const [roleOptions, setRoleOptions] = useState(DEFAULT_ROLE_OPTIONS);
+
+  // Carregar Cargos
+  useEffect(() => {
+    const loadCargos = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('user_roles')
+          .select('codigo, nome, ativo')
+          .eq('ativo', true);
+        if (error) throw error;
+        if (data && data.length > 0) {
+          const formatted = data.map((d) => ({ value: d.codigo, label: d.nome }));
+          setRoleOptions(ordenarCargosPorHierarquia(formatted));
+        }
+      } catch (e) {
+        console.error('[PresencaBancoHoras] erro cargos', e);
+      }
+    };
+    void loadCargos();
+  }, []);
 
   // Carregar Departamentos
   useEffect(() => {
@@ -370,7 +412,7 @@ export const PresencaBancoHoras: React.FC = () => {
 
         const batidasDia = registrosConsolidados[dia] || [];
         const temBatida = batidasDia.length > 0;
-        const trabalhadoNoDia = calcularTrabalhadoMinutos(batidasDia);
+        const trabalhadoNoDia = calcularTrabalhadoMinutosColaborador(batidasDia, colab.role, dia);
         const metaNoDia = metaMinutosNoDia(colabConfig, dia, temBatida, feriadosColab, feriasColab);
         const contaNoSaldo = diaFechadoParaSaldoMensal(dia, hojeStr, batidasDia, colab.role);
 
@@ -386,7 +428,7 @@ export const PresencaBancoHoras: React.FC = () => {
 
       // Calcular status de HOJE
       const batidasHoje = registrosConsolidados[hojeStr] || [];
-      const trabalhadoHoje = calcularTrabalhadoMinutos(batidasHoje);
+      const trabalhadoHoje = calcularTrabalhadoMinutosColaborador(batidasHoje, colab.role, hojeStr);
 
       let statusHoje: StatusHoje = 'ausente';
       const diaSemanaHoje = new Date(`${hojeStr}T12:00:00`).getDay();
@@ -579,7 +621,7 @@ export const PresencaBancoHoras: React.FC = () => {
         diasDoMes,
         opcoesConsolidacaoJornadaMultidia(colab.empresa_id, colabConfig),
       );
-      return { colabConfig, feriadosColab, feriasColab, registrosConsolidados };
+      return { colab, colabConfig, feriadosColab, feriasColab, registrosConsolidados };
     });
 
     return diasDoMes.map((dia) => {
@@ -589,7 +631,7 @@ export const PresencaBancoHoras: React.FC = () => {
       for (const item of colabData) {
         const batidasDia = item.registrosConsolidados[dia] || [];
         const temBatida = batidasDia.length > 0;
-        const trabalhado = calcularTrabalhadoMinutos(batidasDia);
+        const trabalhado = calcularTrabalhadoMinutosColaborador(batidasDia, item.colab.role, dia);
         const meta = metaMinutosNoDia(item.colabConfig, dia, temBatida, item.feriadosColab, item.feriasColab);
 
         totalMetaMinutos += meta;
@@ -642,9 +684,12 @@ export const PresencaBancoHoras: React.FC = () => {
       // 4. Filtro de Departamento
       const matchDepto = departamentoFilter === 'todos' || item.colab.departamento_id === departamentoFilter;
 
-      return matchText && matchStatus && matchSaldo && matchDepto;
+      // 5. Filtro de Cargo
+      const matchCargo = cargoFilter === 'todos' || item.colab.role === cargoFilter;
+
+      return matchText && matchStatus && matchSaldo && matchDepto && matchCargo;
     });
-  }, [colaboradoresConsolidados, searchTerm, statusFilter, saldoFilter, departamentoFilter]);
+  }, [colaboradoresConsolidados, searchTerm, statusFilter, saldoFilter, departamentoFilter, cargoFilter]);
 
   // Colaborador Selecionado para Ficha Drawer
   const selectedColaboradorInfo = useMemo(() => {
@@ -699,7 +744,7 @@ export const PresencaBancoHoras: React.FC = () => {
 
     return diasDoMes.map((dia) => {
       const batidas = registrosConsolidados[dia] || [];
-      const trabalhado = calcularTrabalhadoMinutos(batidas);
+      const trabalhado = calcularTrabalhadoMinutosColaborador(batidas, selectedColaboradorInfo.colab.role, dia);
       const meta = metaMinutosNoDia(colabConfig, dia, batidas.length > 0, feriadosColab, feriasColab);
       const contaSaldo = diaFechadoParaSaldoMensal(
         dia,
@@ -980,6 +1025,21 @@ export const PresencaBancoHoras: React.FC = () => {
                   {departamentos.map((d) => (
                     <option key={d.id} value={d.id}>
                       {d.nome}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+
+              <div className="w-full sm:w-48">
+                <Select
+                  label="Cargo"
+                  value={cargoFilter}
+                  onChange={(e) => setCargoFilter(e.target.value)}
+                >
+                  <option value="todos">Todos os Cargos</option>
+                  {roleOptions.map((r) => (
+                    <option key={r.value} value={r.value}>
+                      {r.label}
                     </option>
                   ))}
                 </Select>
