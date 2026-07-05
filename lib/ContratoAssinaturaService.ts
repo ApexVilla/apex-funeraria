@@ -11,6 +11,10 @@ import { dataHojeIsoLocal, formatarDataIsoPtBr, normalizarDataIso } from './cont
 import { buscarUltimaAssinaturaDigitalContrato } from './contratoAssinaturaDigitalPdf';
 import { carregarContratoEmpresaJuridica } from './contratoEmpresaJuridica';
 import { labelParentescoDependente } from './parentescoDependente';
+import {
+  enderecoCobrancaCompletoFromCliente,
+  enderecoResidencialCompletoFromCliente,
+} from './clienteEndereco';
 
 export { nomePlanoParaExibicao } from './planoNomeExibicao';
 
@@ -77,26 +81,52 @@ export function formatClienteEndereco(
     | 'endereco_numero'
     | 'endereco_complemento'
     | 'endereco_bairro'
+    | 'endereco_quadra'
+    | 'endereco_lote'
     | 'endereco_cidade'
     | 'endereco_estado'
     | 'endereco_cep'
   >,
 ): string {
-  const linha1 = [c.endereco_logradouro, c.endereco_numero]
-    .map((p) => maiusculasContrato(p))
-    .filter(Boolean)
-    .join(', ');
-  const partes = [
-    linha1,
-    maiusculasContrato(c.endereco_complemento),
-    maiusculasContrato(c.endereco_bairro),
-    [c.endereco_cidade, c.endereco_estado]
-      .map((p) => maiusculasContrato(p))
-      .filter(Boolean)
-      .join('/'),
-    c.endereco_cep ? `CEP ${String(c.endereco_cep).replace(/\D/g, '')}` : '',
-  ].filter(Boolean);
-  return partes.join(' - ') || '—';
+  const texto = enderecoResidencialCompletoFromCliente(c);
+  if (!texto) return '—';
+  return texto
+    .split(' — ')
+    .map((parte) => maiusculasContrato(parte))
+    .join(' - ');
+}
+
+/** Endereço de cobrança no contrato impresso (padrão: MAIÚSCULAS). */
+export function formatClienteEnderecoCobranca(
+  c: Pick<
+    ClienteSB,
+    | 'usa_endereco_residencial_cobranca'
+    | 'endereco_logradouro'
+    | 'endereco_numero'
+    | 'endereco_complemento'
+    | 'endereco_bairro'
+    | 'endereco_quadra'
+    | 'endereco_lote'
+    | 'endereco_cidade'
+    | 'endereco_estado'
+    | 'endereco_cep'
+    | 'endereco_cob_logradouro'
+    | 'endereco_cob_numero'
+    | 'endereco_cob_complemento'
+    | 'endereco_cob_bairro'
+    | 'endereco_cob_quadra'
+    | 'endereco_cob_lote'
+    | 'endereco_cob_cidade'
+    | 'endereco_cob_uf'
+    | 'endereco_cob_cep'
+  >,
+): string {
+  const texto = enderecoCobrancaCompletoFromCliente(c);
+  if (!texto) return '—';
+  return texto
+    .split(' — ')
+    .map((parte) => maiusculasContrato(parte))
+    .join(' - ');
 }
 
 /** Tipo/sigla do plano (badge PDF); o rótulo exibido usa o nome real do banco quando disponível. */

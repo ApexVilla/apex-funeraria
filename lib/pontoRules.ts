@@ -7,8 +7,14 @@ import {
   type TipoBatida,
 } from './pontoUtils';
 
-/** Máx. entre início do intervalo e 3ª batida para classificar como volta do almoço (AFD). */
-export const AFD_GAP_VOLTA_ALMOCO_MAX_MINUTOS = 180;
+/** Mín. entre início do intervalo e volta do almoço (AFD). */
+export const AFD_GAP_VOLTA_ALMOCO_MIN_MINUTOS = 20;
+
+/** Máx. entre início do intervalo e volta do almoço (AFD) — almoços longos até 4h. */
+export const AFD_GAP_VOLTA_ALMOCO_MAX_MINUTOS = 240;
+
+/** @deprecated Use AFD_GAP_VOLTA_ALMOCO_MAX_MINUTOS (240). Mantido para referência. */
+export const AFD_GAP_VOLTA_ALMOCO_MAX_MINUTOS_LEGADO = 180;
 
 /** Marcações AFD anteriores a este ano são ignoradas na importação (evita reprocessar histórico antigo). */
 export const AFD_ANO_MINIMO_IMPORTACAO = 2026;
@@ -34,6 +40,10 @@ export type PontoConfig = {
   meta_sabado_minutos?: number;
   /** Primeiro sábado de trabalho da escala alternada (YYYY-MM-DD, deve ser sábado). */
   data_inicio_escala_sabado?: string;
+  /** Cargo entrada/saída: desconta intervalo implícito (padrão true). */
+  intervalo_entrada_saida_ativo?: boolean;
+  /** Minutos de intervalo implícito (60 ou 120). Se omitido, usa padrão do cargo. */
+  intervalo_entrada_saida_minutos?: number;
 };
 
 const DEFAULT_PONTO_CONFIG: PontoConfig = {
@@ -198,6 +208,12 @@ export const getUserPontoConfig = (permissoes: any): PontoConfig => {
   const meta_sabado_minutos =
     Number.isFinite(metaSabadoNum) && metaSabadoNum > 0 ? metaSabadoNum : 4 * 60;
 
+  const intervaloMinutosRaw = Number(cfg.intervalo_entrada_saida_minutos);
+  const intervalo_entrada_saida_minutos =
+    Number.isFinite(intervaloMinutosRaw) && (intervaloMinutosRaw === 60 || intervaloMinutosRaw === 120)
+      ? intervaloMinutosRaw
+      : undefined;
+
   return {
     regime,
     carga_horaria_minutos: carga,
@@ -207,6 +223,11 @@ export const getUserPontoConfig = (permissoes: any): PontoConfig => {
     escala_sabado_alternado: Boolean(cfg.escala_sabado_alternado),
     meta_sabado_minutos,
     data_inicio_escala_sabado,
+    intervalo_entrada_saida_ativo:
+      cfg.intervalo_entrada_saida_ativo === undefined
+        ? undefined
+        : Boolean(cfg.intervalo_entrada_saida_ativo),
+    intervalo_entrada_saida_minutos,
   };
 };
 
@@ -273,8 +294,66 @@ export function usaPontoApenasEntradaSaida(role?: string | null): boolean {
   );
 }
 
-/** Intervalo de almoço/descanso descontado automaticamente quando o cargo só registra entrada e saída. */
-export const INTERVALO_ALMOCO_IMPLICITO_ENTRADA_SAIDA_MINUTOS = 2 * 60;
+/** Intervalo implícito — vendedor externo (2h). */
+export const INTERVALO_ALMOCO_IMPLICITO_VENDEDOR_MINUTOS = 2 * 60;
+
+/** Intervalo implícito — cobrador em campo (7h–17h com 1h de almoço, sem batida de intervalo). */
+export const INTERVALO_ALMOCO_IMPLICITO_COBRADOR_MINUTOS = 1 * 60;
+
+/** @deprecated Preferir {@link intervaloAlmocoImplicitoEntradaSaidaMinutos} com o cargo. */
+export const INTERVALO_ALMOCO_IMPLICITO_ENTRADA_SAIDA_MINUTOS =
+  INTERVALO_ALMOCO_IMPLICITO_VENDEDOR_MINUTOS;
+
+export type IntervaloEntradaSaidaColaborador = {
+  ativo: boolean;
+  minutos: number;
+};
+
+/** Padrão do cargo quando não há configuração explícita no colaborador. */
+export function intervaloEntradaSaidaPadraoCargoMinutos(role?: string | null): number {
+  if ((role || '').toLowerCase() === 'cobrador') {
+    return INTERVALO_ALMOCO_IMPLICITO_COBRADOR_MINUTOS;
+  }
+  return INTERVALO_ALMOCO_IMPLICITO_VENDEDOR_MINUTOS;
+}
+
+/** Configuração efetiva de intervalo implícito (cargo entrada/saída). */
+export function resolverIntervaloEntradaSaidaColaborador(
+  role?: string | null,
+  permissoes?: Record<string, unknown> | null,
+): IntervaloEntradaSaidaColaborador {
+  if (!usaPontoApenasEntradaSaida(role)) {
+    return { ativo: false, minutos: 0 };
+  }
+  const cfg = getUserPontoConfig(permissoes);
+  if (cfg.intervalo_entrada_saida_ativo === false) {
+    return { ativo: false, minutos: 0 };
+  }
+  const minutos =
+    cfg.intervalo_entrada_saida_minutos ?? intervaloEntradaSaidaPadraoCargoMinutos(role);
+  return { ativo: true, minutos };
+}
+
+export function intervaloAlmocoImplicitoEntradaSaidaMinutos(
+  role?: string | null,
+  permissoes?: Record<string, unknown> | null,
+): number {
+  const { ativo, minutos } = resolverIntervaloEntradaSaidaColaborador(role, permissoes);
+  return ativo ? minutos : 0;
+}
+
+/** Texto para declaração CLT do espelho (ex.: "1 (uma) hora"). */
+export function labelIntervaloAlmocoImplicitoDeclaracao(
+  role?: string | null,
+  permissoes?: Record<string, unknown> | null,
+): string {
+  const { ativo, minutos } = resolverIntervaloEntradaSaidaColaborador(role, permissoes);
+  if (!ativo || minutos <= 0) return 'sem intervalo intrajornada';
+  if (minutos === INTERVALO_ALMOCO_IMPLICITO_COBRADOR_MINUTOS) return '1 (uma) hora';
+  if (minutos === INTERVALO_ALMOCO_IMPLICITO_VENDEDOR_MINUTOS) return '2 (duas) horas';
+  const horas = minutos / 60;
+  return horas === 1 ? '1 (uma) hora' : `${horas} horas`;
+}
 
 function isSabadoPonto(dataISO?: string | null): boolean {
   const dia = String(dataISO ?? '').slice(0, 10);
@@ -298,14 +377,25 @@ export function normalizarBatidasEntradaSaida(batidas: BatidaPonto[]): BatidaPon
   ];
 }
 
+/** Intervalo informado manualmente (ajuste RH) — substitui o desconto automático de almoço. */
+export function temIntervaloExplicitoEntradaSaida(batidas: BatidaPonto[]): boolean {
+  return (
+    batidas.some((b) => b.tipo === 'inicio_intervalo') &&
+    batidas.some((b) => b.tipo === 'fim_intervalo')
+  );
+}
+
 /** Indica se o dia deve ter desconto automático de intervalo (sem batidas de intervalo registradas). Sábado não tem intervalo. */
 export function deveAplicarDescontoAlmocoImplicito(
   batidas: BatidaPonto[],
   role?: string | null,
   dataISO?: string,
+  permissoes?: Record<string, unknown> | null,
 ): boolean {
   if (!usaPontoApenasEntradaSaida(role)) return false;
   if (isSabadoPonto(dataISO)) return false;
+  if (intervaloAlmocoImplicitoEntradaSaidaMinutos(role, permissoes) <= 0) return false;
+  if (temIntervaloExplicitoEntradaSaida(batidas)) return false;
   const norm = normalizarBatidasEntradaSaida(batidas);
   const temEntrada = norm.some((b) => b.tipo === 'entrada');
   const temSaida = norm.some((b) => b.tipo === 'saida');
@@ -317,9 +407,10 @@ export function intervaloAlmocoImplicitoMinutosNoDia(
   batidas: BatidaPonto[],
   role?: string | null,
   dataISO?: string,
+  permissoes?: Record<string, unknown> | null,
 ): number {
-  return deveAplicarDescontoAlmocoImplicito(batidas, role, dataISO)
-    ? INTERVALO_ALMOCO_IMPLICITO_ENTRADA_SAIDA_MINUTOS
+  return deveAplicarDescontoAlmocoImplicito(batidas, role, dataISO, permissoes)
+    ? intervaloAlmocoImplicitoEntradaSaidaMinutos(role, permissoes)
     : 0;
 }
 
@@ -328,12 +419,19 @@ export function calcularTrabalhadoMinutosColaborador(
   batidas: BatidaPonto[],
   role?: string | null,
   dataISO?: string,
+  permissoes?: Record<string, unknown> | null,
 ): number {
   if (usaPontoApenasEntradaSaida(role)) {
+    if (temIntervaloExplicitoEntradaSaida(batidas)) {
+      return calcularTrabalhadoMinutos(batidas);
+    }
     const norm = normalizarBatidasEntradaSaida(batidas);
     const bruto = calcularTrabalhadoMinutos(norm);
-    if (!deveAplicarDescontoAlmocoImplicito(batidas, role, dataISO)) return bruto;
-    return Math.max(0, bruto - INTERVALO_ALMOCO_IMPLICITO_ENTRADA_SAIDA_MINUTOS);
+    if (!deveAplicarDescontoAlmocoImplicito(batidas, role, dataISO, permissoes)) return bruto;
+    return Math.max(
+      0,
+      bruto - intervaloAlmocoImplicitoEntradaSaidaMinutos(role, permissoes),
+    );
   }
   const bruto = calcularTrabalhadoMinutos(batidas);
   return bruto;
@@ -397,6 +495,78 @@ export function tiposBatidaParaSelecao(role?: string | null): TipoBatida[] {
   return ordemBatidasPonto(role);
 }
 
+/** Intervalo de almoço ausente ou incompleto nas batidas já gravadas. */
+export function intervaloAlmocoIncompletoNasBatidas(
+  batidasExistentes: { tipo: TipoBatida }[],
+): boolean {
+  if (!batidasExistentes.length) return false;
+  const tipos = new Set(batidasExistentes.map((b) => b.tipo));
+  return !tipos.has('inicio_intervalo') || !tipos.has('fim_intervalo');
+}
+
+/**
+ * Decide se o dia deve ser importado do zero, mesclado (intervalo faltando) ou ignorado.
+ * Dias com entrada/saída mas sem intervalo completo são atualizados com o AFD.
+ */
+export function resolverImportacaoAfdDia(
+  horariosAfd: string[],
+  batidasExistentes: { tipo: TipoBatida; timestamp: string }[],
+): 'novo' | 'mesclar' | 'ignorar' {
+  if (!batidasExistentes.length) return 'novo';
+  if (horariosAfd.length < 2) return 'ignorar';
+
+  const tipos = new Set(batidasExistentes.map((b) => b.tipo));
+  const temEntradaSaida = tipos.has('entrada') && tipos.has('saida');
+  const faltaIntervalo = intervaloAlmocoIncompletoNasBatidas(batidasExistentes);
+  const afdTemIntervalo = horariosAfd.length >= 3;
+
+  const horariosExistentes = new Set(
+    batidasExistentes.map((b) => horaFromTimestamp(b.timestamp)).filter(Boolean),
+  );
+  const horariosNovos = horariosAfd.filter((h) => !horariosExistentes.has(h));
+
+  // AFD tem mais marcações — inclui volta do almoço que falta no banco
+  if (horariosAfd.length > batidasExistentes.length && afdTemIntervalo) {
+    return 'mesclar';
+  }
+
+  // Entrada + saída no banco, intervalo incompleto, AFD com 3+ horários
+  if (temEntradaSaida && faltaIntervalo && afdTemIntervalo) {
+    return 'mesclar';
+  }
+
+  // Horários novos no AFD (ex.: só faltava a volta do almoço)
+  if (horariosNovos.length > 0 && faltaIntervalo && afdTemIntervalo) {
+    return 'mesclar';
+  }
+
+  // Mesmos horários gravados mas tipos errados (ex.: 3ª batida como saída)
+  if (
+    faltaIntervalo &&
+    afdTemIntervalo &&
+    horariosNovos.length === 0 &&
+    horariosAfd.length >= batidasExistentes.length
+  ) {
+    return 'mesclar';
+  }
+
+  return 'ignorar';
+}
+
+/** Junta horários do AFD com os já gravados no banco (sem duplicar). */
+export function mesclarHorariosAfdComExistentes(
+  horariosAfd: string[],
+  batidasExistentes: { timestamp: string }[],
+): string[] {
+  const set = new Set<string>();
+  batidasExistentes.forEach((b) => {
+    const h = horaFromTimestamp(b.timestamp);
+    if (h) set.add(h);
+  });
+  horariosAfd.forEach((h) => set.add(h));
+  return [...set].sort();
+}
+
 /** Minutos entre horários HH:mm no mesmo dia (fim − início). */
 function minutosEntreHorariosLocal(inicioHHmm: string, fimHHmm: string): number {
   const parse = (t: string) => {
@@ -410,10 +580,32 @@ function minutosEntreHorariosLocal(inicioHHmm: string, fimHHmm: string): number 
   return b - a;
 }
 
+/** 3ª batida é volta do almoço (não saída) quando o intervalo tem duração plausível. */
+function terceiraBatidaEhVoltaAlmoco(horarios: string[]): boolean {
+  if (horarios.length !== 3) return false;
+
+  const gapManha = minutosEntreHorariosLocal(horarios[0], horarios[1]);
+  const gapAposIntervalo = minutosEntreHorariosLocal(horarios[1], horarios[2]);
+
+  if (
+    gapAposIntervalo < AFD_GAP_VOLTA_ALMOCO_MIN_MINUTOS ||
+    gapAposIntervalo > AFD_GAP_VOLTA_ALMOCO_MAX_MINUTOS
+  ) {
+    return false;
+  }
+
+  // Volta do almoço costuma ser mais curta que o período trabalhado antes do intervalo.
+  if (gapManha >= 60 && gapAposIntervalo <= gapManha) return true;
+
+  // Manhã curta (sábado/plantão) — ainda aceita retorno dentro da faixa de almoço.
+  return gapManha >= 30;
+}
+
 /**
  * Mapeia batidas do relógio físico (AFD) pela quantidade de horários no dia.
  * Relógios não informam tipo — 2 batidas = entrada + saída (não intervalo).
- * Com 3 batidas: se a 3ª ocorre ~1–3h após o intervalo, é volta do almoço (fim_intervalo).
+ * Com 3 batidas: se a 3ª ocorre ~20min–4h após o intervalo, é volta do almoço (fim_intervalo).
+ * Com 4+ batidas: entrada, início/fim intervalo e saída na ordem cronológica.
  */
 export function mapearTiposBatidaImportacaoRelogio(
   quantidadeBatidas: number,
@@ -423,13 +615,17 @@ export function mapearTiposBatidaImportacaoRelogio(
   if (quantidadeBatidas === 1) return ['entrada'];
   if (quantidadeBatidas === 2) return ['entrada', 'saida'];
   if (quantidadeBatidas === 3) {
-    if (horariosOrdenados?.length === 3) {
-      const gapAlmoco = minutosEntreHorariosLocal(horariosOrdenados[1], horariosOrdenados[2]);
-      if (gapAlmoco > 0 && gapAlmoco <= AFD_GAP_VOLTA_ALMOCO_MAX_MINUTOS) {
-        return ['entrada', 'inicio_intervalo', 'fim_intervalo'];
-      }
+    if (horariosOrdenados?.length === 3 && terceiraBatidaEhVoltaAlmoco(horariosOrdenados)) {
+      return ['entrada', 'inicio_intervalo', 'fim_intervalo'];
     }
     return ['entrada', 'inicio_intervalo', 'saida'];
+  }
+  if (quantidadeBatidas >= 4) {
+    const tipos: TipoBatida[] = [...ORDEM_BATIDA_JORNADA_COMPLETA];
+    while (tipos.length < quantidadeBatidas) {
+      tipos.push('saida');
+    }
+    return tipos.slice(0, quantidadeBatidas);
   }
   return ORDEM_BATIDA_JORNADA_COMPLETA.slice(0, quantidadeBatidas);
 }

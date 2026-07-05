@@ -26,12 +26,21 @@ import { useEmpresaContextoAtivo } from '../../lib/EmpresaContextoAtivo';
 import { useAuth } from '../../lib/AuthContext';
 import { ensureContasDestinoBaixa } from '../../lib/finCaixaAutoAbertura';
 import { inferirTipoDocumentoPagar } from '../../lib/inferirTipoDocumento';
+import { clienteEhFuncionario } from '../../lib/clienteFuncionario';
+import {
+    formatarMoedaInputAoSair,
+    parseInputMoedaParaCentavos,
+    sanitizarTextoMoedaInput,
+} from '../../lib/moedaInputUtils';
 
 type FornecedorOption = {
     id: string;
+    entidade_id: string;
     nome: string;
     codigo?: string | null;
     cnpj_cpf?: string | null;
+    origem: 'fornecedor' | 'cliente';
+    eh_funcionario?: boolean;
 };
 
 export interface NovaContaPagarModalProps {
@@ -65,154 +74,8 @@ const addMesesYm = (ym: string, meses: number): string => {
     return `${data.getFullYear()}-${String(data.getMonth() + 1).padStart(2, '0')}`;
 };
 
-// ──────────────── Combobox interno (com pesquisa) ────────────────
-interface ComboItem {
-    id: string;
-    primary: string;
-    secondary?: string;
-}
-
-interface ComboboxProps {
-    placeholder: string;
-    items: ComboItem[];
-    selected: ComboItem | null;
-    onSelect: (item: ComboItem | null) => void;
-    loading?: boolean;
-    emptyHint?: React.ReactNode;
-    permitirLimpar?: boolean;
-    icone?: React.ReactNode;
-}
-
-const Combobox: React.FC<ComboboxProps> = ({
-    placeholder,
-    items,
-    selected,
-    onSelect,
-    loading,
-    emptyHint,
-    permitirLimpar = true,
-    icone,
-}) => {
-    const [open, setOpen] = useState(false);
-    const [busca, setBusca] = useState('');
-    const ref = useRef<HTMLDivElement | null>(null);
-
-    useEffect(() => {
-        const handler = (e: MouseEvent) => {
-            if (!ref.current) return;
-            if (!ref.current.contains(e.target as Node)) setOpen(false);
-        };
-        document.addEventListener('mousedown', handler);
-        return () => document.removeEventListener('mousedown', handler);
-    }, []);
-
-    const filtered = useMemo(() => {
-        const t = busca.trim().toLowerCase();
-        if (!t) return items;
-        return items.filter(
-            (it) =>
-                it.primary.toLowerCase().includes(t) ||
-                (it.secondary || '').toLowerCase().includes(t)
-        );
-    }, [items, busca]);
-
-    return (
-        <div className="relative" ref={ref}>
-            <button
-                type="button"
-                onClick={() => setOpen((v) => !v)}
-                className="w-full h-10 flex items-center justify-between gap-2 px-3 border border-slate-200 rounded-md bg-white text-sm hover:border-slate-300 transition focus:border-slate-800 focus:ring-2 focus:ring-slate-100 outline-none"
-            >
-                <span className="truncate text-left flex items-center gap-2 min-w-0">
-                    {icone && <span className="text-gray-400 shrink-0">{icone}</span>}
-                    {selected ? (
-                        <span className="min-w-0 truncate">
-                            <span className="font-semibold text-gray-900">{selected.primary}</span>
-                            {selected.secondary && (
-                                <span className="text-gray-500 ml-2 text-xs">{selected.secondary}</span>
-                            )}
-                        </span>
-                    ) : (
-                        <span className="text-gray-400">{placeholder}</span>
-                    )}
-                </span>
-                <ChevronDown className="h-4 w-4 text-gray-400 shrink-0" />
-            </button>
-            {open && (
-                <div className="absolute left-0 right-0 mt-1 z-30 bg-white border border-slate-200 rounded-md shadow-lg overflow-hidden">
-                    <div className="px-2 py-2 border-b border-gray-100 flex items-center gap-2">
-                        <Search className="h-4 w-4 text-gray-400" />
-                        <input
-                            type="text"
-                            autoFocus
-                            value={busca}
-                            onChange={(e) => setBusca(e.target.value)}
-                            placeholder="Pesquisar…"
-                            className="flex-1 text-sm outline-none bg-transparent"
-                        />
-                    </div>
-                    <div className="max-h-64 overflow-y-auto">
-                        {permitirLimpar && selected && (
-                            <button
-                                type="button"
-                                onClick={() => {
-                                    onSelect(null);
-                                    setOpen(false);
-                                    setBusca('');
-                                }}
-                                className="w-full text-left px-3 py-2 text-xs text-amber-700 hover:bg-amber-50 border-b border-amber-100 font-semibold"
-                            >
-                                ✕ Limpar seleção
-                            </button>
-                        )}
-                        {loading ? (
-                            <div className="px-3 py-6 text-center text-sm text-gray-500 flex items-center justify-center gap-2">
-                                <RefreshCw className="h-4 w-4 animate-spin" /> Carregando…
-                            </div>
-                        ) : filtered.length === 0 ? (
-                            <div className="px-3 py-6 text-center text-sm text-gray-500">
-                                {busca.trim() ? 'Nenhum resultado.' : emptyHint || 'Nenhum item disponível.'}
-                            </div>
-                        ) : (
-                            <ul>
-                                {filtered.map((it) => {
-                                    const ativo = selected?.id === it.id;
-                                    return (
-                                        <li key={it.id}>
-                                            <button
-                                                type="button"
-                                                onClick={() => {
-                                                    onSelect(it);
-                                                    setOpen(false);
-                                                    setBusca('');
-                                                }}
-                                                className={`w-full text-left px-3 py-2 hover:bg-gray-50 flex items-start gap-2 ${
-                                                    ativo ? 'bg-blue-50' : ''
-                                                }`}
-                                            >
-                                                {ativo ? (
-                                                    <CheckCircle2 className="h-4 w-4 text-blue-600 mt-0.5 shrink-0" />
-                                                ) : (
-                                                    <div className="h-4 w-4 rounded-full border border-gray-300 mt-0.5 shrink-0" />
-                                                )}
-                                                <div className="min-w-0 flex-1">
-                                                    <p className="text-sm font-medium text-gray-900 truncate">{it.primary}</p>
-                                                    {it.secondary && (
-                                                        <p className="text-[11px] text-gray-500 truncate">{it.secondary}</p>
-                                                    )}
-                                                </div>
-                                            </button>
-                                        </li>
-                                    );
-                                })}
-                            </ul>
-                        )}
-                    </div>
-                </div>
-            )}
-        </div>
-    );
-};
+import { Combobox, ComboItem } from './Combobox';
+import { CompetenciaMesAnoInput } from './CompetenciaMesAnoInput';
 
 // ──────────────── Modal ────────────────
 export const NovaContaPagarModal: React.FC<NovaContaPagarModalProps> = ({ onClose, onSuccess, caixaDireto }) => {
@@ -305,19 +168,62 @@ export const NovaContaPagarModal: React.FC<NovaContaPagarModalProps> = ({ onClos
             if (!empresaId) return;
             setCarregandoFornecedores(true);
             try {
-                const { data, error: qErr } = await supabase
-                    .from('fornecedores')
-                    .select('id, nome, codigo, cnpj_cpf')
-                    .eq('empresa_id', empresaId)
-                    .eq('ativo', true)
-                    .is('deleted_at', null)
-                    .order('nome');
+                const [fornecedoresRes, clientesRes] = await Promise.all([
+                    supabase
+                        .from('fornecedores')
+                        .select('id, nome, codigo, cnpj_cpf')
+                        .eq('empresa_id', empresaId)
+                        .eq('ativo', true)
+                        .is('deleted_at', null)
+                        .order('nome'),
+                    supabase
+                        .from('clientes')
+                        .select('id, nome, codigo, cpf, campos_personalizados')
+                        .eq('empresa_id', empresaId)
+                        .is('deleted_at', null)
+                        .order('nome'),
+                ]);
                 if (cancelado) return;
-                if (qErr) {
-                    console.error('[NovaContaPagarModal] fornecedores:', qErr);
+                if (fornecedoresRes.error || clientesRes.error) {
+                    if (fornecedoresRes.error) {
+                        console.error('[NovaContaPagarModal] fornecedores:', fornecedoresRes.error);
+                    }
+                    if (clientesRes.error) {
+                        console.error('[NovaContaPagarModal] clientes:', clientesRes.error);
+                    }
                     setFornecedores([]);
                 } else {
-                    setFornecedores((data ?? []) as FornecedorOption[]);
+                    const fornecedoresMix: FornecedorOption[] = [
+                        ...((fornecedoresRes.data ?? []) as Array<{
+                            id: string;
+                            nome: string;
+                            codigo?: string | null;
+                            cnpj_cpf?: string | null;
+                        }>).map((row) => ({
+                            id: `fornecedor:${row.id}`,
+                            entidade_id: row.id,
+                            nome: row.nome,
+                            codigo: row.codigo,
+                            cnpj_cpf: row.cnpj_cpf,
+                            origem: 'fornecedor' as const,
+                        })),
+                        ...((clientesRes.data ?? []) as Array<{
+                            id: string;
+                            nome: string;
+                            codigo?: string | null;
+                            cpf?: string | null;
+                            campos_personalizados?: Record<string, unknown> | null;
+                        }>).map((row) => ({
+                            id: `cliente:${row.id}`,
+                            entidade_id: row.id,
+                            nome: row.nome,
+                            codigo: row.codigo,
+                            cnpj_cpf: row.cpf,
+                            origem: 'cliente' as const,
+                            eh_funcionario: clienteEhFuncionario(row),
+                        })),
+                    ].sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR', { sensitivity: 'base' }));
+                    setFornecedores(fornecedoresMix);
                 }
             } finally {
                 if (!cancelado) setCarregandoFornecedores(false);
@@ -334,7 +240,11 @@ export const NovaContaPagarModal: React.FC<NovaContaPagarModalProps> = ({ onClos
             fornecedores.map((f) => ({
                 id: f.id,
                 primary: (f.codigo ? `${f.codigo} — ` : '') + f.nome,
-                secondary: f.cnpj_cpf || undefined,
+                secondary: `${f.origem === 'cliente' ? 'Cliente' : 'Fornecedor'}${
+                    f.eh_funcionario ? ' • Funcionário' : ''
+                }${
+                    f.cnpj_cpf ? ` • ${f.cnpj_cpf}` : ''
+                }`,
             })),
         [fornecedores]
     );
@@ -376,16 +286,24 @@ export const NovaContaPagarModal: React.FC<NovaContaPagarModalProps> = ({ onClos
         return fornecedorItens.find((it) => it.id === fornecedorId) || null;
     }, [fornecedorId, fornecedorItens]);
 
+    const fornecedorSelecionadoMeta = useMemo<FornecedorOption | null>(() => {
+        if (!fornecedorId) return null;
+        return fornecedores.find((item) => item.id === fornecedorId) || null;
+    }, [fornecedorId, fornecedores]);
+
     const planoContaSelecionado = useMemo<ComboItem | null>(() => {
         if (!planoContaId) return null;
         return planoContasDespesa.find((it) => it.id === planoContaId) || null;
     }, [planoContaId, planoContasDespesa]);
 
     const handleValorChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-        const raw = e.target.value.replace(/\D/g, '');
-        const c = parseInt(raw) || 0;
-        setValorCentavos(c);
-        setValorInput((c / 100).toFixed(2));
+        const v = sanitizarTextoMoedaInput(e.target.value);
+        setValorInput(v);
+        setValorCentavos(parseInputMoedaParaCentavos(v));
+    };
+
+    const handleValorBlur = () => {
+        setValorInput((prev) => formatarMoedaInputAoSair(prev));
     };
 
     const valorPorParcela = useMemo(() => {
@@ -425,8 +343,12 @@ export const NovaContaPagarModal: React.FC<NovaContaPagarModalProps> = ({ onClos
         const nParcelas = caixaDireto ? 1 : (parcelar ? Math.max(2, Math.min(60, totalParcelas)) : 1);
         setLoading(true);
         try {
+            const fornecedorRealId =
+                fornecedorSelecionadoMeta?.origem === 'fornecedor'
+                    ? fornecedorSelecionadoMeta.entidade_id
+                    : null;
             const fornecedorNomeFinal = fornecedorId
-                ? fornecedores.find((f) => f.id === fornecedorId)?.nome || ''
+                ? fornecedorSelecionadoMeta?.nome || ''
                 : fornecedorNomeAvulso.trim();
             const planoConta = planoContas.find((c) => c.id === planoContaId);
 
@@ -441,7 +363,7 @@ export const NovaContaPagarModal: React.FC<NovaContaPagarModalProps> = ({ onClos
                 const sufixo = nParcelas > 1 ? ` (${i + 1}/${nParcelas})` : '';
                 const descricaoFinal = `${descricao.trim()}${sufixo}`;
                 const tipoDocumento = inferirTipoDocumentoPagar({
-                    fornecedorId,
+                    fornecedorId: fornecedorRealId,
                     descricao: descricaoFinal,
                     planoContaNome: planoConta?.nome,
                     planoContaCodigo: planoConta?.codigo,
@@ -455,7 +377,7 @@ export const NovaContaPagarModal: React.FC<NovaContaPagarModalProps> = ({ onClos
                     fornecedor_id?: string;
                     observacoes?: string;
                 } = {
-                    fornecedor_id: fornecedorId || undefined,
+                    fornecedor_id: fornecedorRealId || undefined,
                     fornecedor_nome: fornecedorNomeFinal || undefined,
                     tipo_documento: tipoDocumento,
                     descricao: descricaoFinal,
@@ -498,7 +420,7 @@ export const NovaContaPagarModal: React.FC<NovaContaPagarModalProps> = ({ onClos
                         observacaoPrefixo: `Sessão retroativa — despesa no caixa (${caixaDireto.contaLabel || 'caixa'})`,
                     });
                     if (!prepCaixa.ok) {
-                        throw new Error(prepCaixa.errorMsg);
+                        throw new Error((prepCaixa as { errorMsg?: string }).errorMsg || 'Erro ao garantir caixa para baixa.');
                     }
 
                     const okBaixa = await baixarContaPagar({
@@ -640,10 +562,10 @@ export const NovaContaPagarModal: React.FC<NovaContaPagarModalProps> = ({ onClos
                                     <Combobox
                                         placeholder={
                                             carregandoFornecedores
-                                                ? 'Carregando fornecedores…'
+                                                ? 'Carregando favorecidos…'
                                                 : fornecedores.length === 0
-                                                    ? 'Nenhum fornecedor cadastrado'
-                                                    : 'Pesquisar fornecedor cadastrado…'
+                                                    ? 'Nenhum cliente ou fornecedor cadastrado'
+                                                    : 'Pesquisar cliente ou fornecedor cadastrado…'
                                         }
                                         items={fornecedorItens}
                                         selected={fornecedorSelecionado}
@@ -655,8 +577,7 @@ export const NovaContaPagarModal: React.FC<NovaContaPagarModalProps> = ({ onClos
                                         icone={<Truck className="h-3.5 w-3.5" />}
                                         emptyHint={
                                             <>
-                                                Nenhum fornecedor cadastrado. Cadastre em{' '}
-                                                <span className="font-semibold">Estoque → Fornecedores</span>.
+                                                Nenhum cliente ou fornecedor cadastrado para esta unidade.
                                             </>
                                         }
                                     />
@@ -732,11 +653,11 @@ export const NovaContaPagarModal: React.FC<NovaContaPagarModalProps> = ({ onClos
                                 <div className="space-y-1">
                                     <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wide">Valor Original (R$) *</label>
                                     <input
-                                        type="number"
-                                        step="0.01"
-                                        min="0"
+                                        type="text"
+                                        inputMode="decimal"
                                         value={valorInput}
                                         onChange={handleValorChange}
+                                        onBlur={handleValorBlur}
                                         className="w-full h-10 px-3 border border-slate-200 rounded-md text-sm placeholder:text-slate-400 focus:border-slate-800 focus:ring-2 focus:ring-slate-100 outline-none transition font-semibold text-slate-900"
                                         placeholder="0,00"
                                         required
@@ -792,15 +713,11 @@ export const NovaContaPagarModal: React.FC<NovaContaPagarModalProps> = ({ onClos
                                         className="w-full h-10 px-3 border border-slate-200 rounded-md text-sm focus:border-slate-800 focus:ring-2 focus:ring-slate-100 outline-none transition"
                                     />
                                 </div>
-                                <div className="space-y-1">
-                                    <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wide">Competência (Mês/Ano)</label>
-                                    <input
-                                        type="month"
-                                        value={dataCompetenciaYm}
-                                        onChange={(e) => setDataCompetenciaYm(e.target.value)}
-                                        className="w-full h-10 px-3 border border-slate-200 rounded-md text-sm focus:border-slate-800 focus:ring-2 focus:ring-slate-100 outline-none transition"
-                                    />
-                                </div>
+                                <CompetenciaMesAnoInput
+                                    label="Competência (Mês/Ano)"
+                                    value={dataCompetenciaYm}
+                                    onChange={setDataCompetenciaYm}
+                                />
                             </div>
 
                             {/* Parcelamento */}

@@ -1,12 +1,14 @@
 import { supabase } from './supabase';
+import { getUserPontoConfig } from './pontoRules';
 import {
   type BatidaPonto,
-  normalizarOrigemBatidaPonto,
-  type TipoBatida,
+  batidasMesmoHorarioMinuto,
   diaPosteriorLocal,
   intervaloDiaLocal,
   montarChaveStoragePonto,
   timestampFromDiaEHora,
+  normalizarOrigemBatidaPonto,
+  type TipoBatida,
 } from './pontoUtils';
 import { gravarBatidasLocal } from './pontoSyncService';
 import type { PontoDiaOcorrencia, PontoDiaOcorrenciaTipo } from './pontoDiaOcorrencia';
@@ -21,6 +23,32 @@ const TIPOS_ORDEM: TipoBatida[] = [
   'fim_intervalo',
   'saida',
 ];
+
+function montarHorariosDesejados(
+  dataISO: string,
+  horarios: HorariosAjusteDia,
+): Array<{ tipo: TipoBatida; timestamp: string }> {
+  const inserir: Array<{ tipo: TipoBatida; timestamp: string }> = [];
+  for (const tipo of TIPOS_ORDEM) {
+    const hora = (horarios[tipo] || '').trim();
+    if (!hora) continue;
+    const ts = timestampFromDiaEHora(dataISO, hora);
+    if (!ts) throw new Error(`Horário inválido: ${hora} (${tipo})`);
+    inserir.push({ tipo, timestamp: ts });
+  }
+
+  const entradaH = (horarios.entrada || '').trim();
+  const saidaH = (horarios.saida || '').trim();
+  if (entradaH && saidaH) {
+    const saidaItem = inserir.find((i) => i.tipo === 'saida');
+    if (saidaItem && saidaH <= entradaH) {
+      const tsSaida = timestampFromDiaEHora(diaPosteriorLocal(dataISO), saidaH);
+      if (!tsSaida) throw new Error(`Horário inválido: ${saidaH} (saida)`);
+      saidaItem.timestamp = tsSaida;
+    }
+  }
+  return inserir;
+}
 
 function mapRowToBatida(row: Record<string, unknown>): BatidaPonto {
   return {
@@ -56,9 +84,77 @@ export async function excluirBatidasDiaPonto(params: {
   gravarBatidasLocal(storageKey, []);
 }
 
+/** Batidas do dia no banco (+ saída noturna no dia seguinte, se houver). */
+async function carregarBatidasExistentesEdicao(params: {
+  empresaId: string;
+  userId: string;
+  dataISO: string;
+}): Promise<Map<TipoBatida, BatidaPonto>> {
+  const { inicio, fim } = intervaloDiaLocal(params.dataISO);
+  const { data, error } = await supabase
+    .from('ponto_registros')
+    .select('*')
+    .eq('empresa_id', params.empresaId)
+    .eq('user_id', params.userId)
+    .gte('timestamp', inicio)
+    .lte('timestamp', fim);
+
+  if (error) throw error;
+
+  const porTipo = new Map<TipoBatida, BatidaPonto>();
+  for (const row of data || []) {
+    const batida = mapRowToBatida(row as Record<string, unknown>);
+    if (!porTipo.has(batida.tipo)) porTipo.set(batida.tipo, batida);
+  }
+
+  if (!porTipo.has('saida') && porTipo.has('entrada')) {
+    const diaSeg = diaPosteriorLocal(params.dataISO);
+    const { inicio: i2, fim: f2 } = intervaloDiaLocal(diaSeg);
+    const { data: saidas, error: err2 } = await supabase
+      .from('ponto_registros')
+      .select('*')
+      .eq('empresa_id', params.empresaId)
+      .eq('user_id', params.userId)
+      .eq('tipo', 'saida')
+      .gte('timestamp', i2)
+      .lte('timestamp', f2)
+      .order('timestamp');
+
+    if (err2) throw err2;
+    const saidaNoturna = (saidas || [])[0];
+    if (saidaNoturna) {
+      porTipo.set('saida', mapRowToBatida(saidaNoturna as Record<string, unknown>));
+    }
+  }
+
+  return porTipo;
+}
+
+async function recarregarBatidasDiaStorage(params: {
+  empresaId: string;
+  userId: string;
+  dataISO: string;
+}): Promise<BatidaPonto[]> {
+  const { inicio, fim } = intervaloDiaLocal(params.dataISO);
+  const { data, error } = await supabase
+    .from('ponto_registros')
+    .select('*')
+    .eq('empresa_id', params.empresaId)
+    .eq('user_id', params.userId)
+    .gte('timestamp', inicio)
+    .lte('timestamp', fim)
+    .order('timestamp');
+
+  if (error) throw error;
+  const batidas = (data || []).map((row) => mapRowToBatida(row as Record<string, unknown>));
+  const storageKey = montarChaveStoragePonto(params.empresaId, params.userId, params.dataISO);
+  gravarBatidasLocal(storageKey, batidas);
+  return batidas;
+}
+
 /**
- * Substitui o dia inteiro por horários informados pelo gestor.
- * Campos vazios não geram batida; se todos vazios, apenas limpa o dia.
+ * Ajusta horários do dia: só batidas alteradas recebem origem `ajuste_manual` (* no espelho).
+ * Batidas iguais permanecem intactas no banco (sem apagar/recriar o dia inteiro).
  */
 export async function salvarAjusteManualDiaPonto(params: {
   empresaId: string;
@@ -67,58 +163,27 @@ export async function salvarAjusteManualDiaPonto(params: {
   dataISO: string;
   horarios: HorariosAjusteDia;
   motivo: string;
+  /** Batidas antes da edição — preserva origem das que não mudaram. */
+  batidasAnteriores?: BatidaPonto[];
 }): Promise<BatidaPonto[]> {
   const motivo = params.motivo.trim();
   if (!motivo) throw new Error('Informe o motivo do ajuste.');
 
-  const inserir: Array<{ tipo: TipoBatida; timestamp: string }> = [];
-  for (const tipo of TIPOS_ORDEM) {
-    const hora = (params.horarios[tipo] || '').trim();
-    if (!hora) continue;
-    const ts = timestampFromDiaEHora(params.dataISO, hora);
-    if (!ts) throw new Error(`Horário inválido: ${hora} (${tipo})`);
-    inserir.push({ tipo, timestamp: ts });
-  }
-
-  const entradaH = (params.horarios.entrada || '').trim();
-  const saidaH = (params.horarios.saida || '').trim();
-  if (entradaH && saidaH) {
-    const saidaItem = inserir.find((i) => i.tipo === 'saida');
-    if (saidaItem && saidaH <= entradaH) {
-      const tsSaida = timestampFromDiaEHora(diaPosteriorLocal(params.dataISO), saidaH);
-      if (!tsSaida) throw new Error(`Horário inválido: ${saidaH} (saida)`);
-      saidaItem.timestamp = tsSaida;
-    }
-  }
-
-  await excluirBatidasDiaPonto({
+  const desejados = montarHorariosDesejados(params.dataISO, params.horarios);
+  const existentesPorTipo = await carregarBatidasExistentesEdicao({
     empresaId: params.empresaId,
     userId: params.userIdColaborador,
     dataISO: params.dataISO,
   });
 
-  const saidaNoturna = inserir.find((i) => i.tipo === 'saida');
-  if (saidaNoturna && entradaH && saidaH && saidaH <= entradaH) {
-    const diaSaida = diaPosteriorLocal(params.dataISO);
-    const { inicio, fim } = intervaloDiaLocal(diaSaida);
-    const { data: batidasProx } = await supabase
-      .from('ponto_registros')
-      .select('tipo')
-      .eq('empresa_id', params.empresaId)
-      .eq('user_id', params.userIdColaborador)
-      .gte('timestamp', inicio)
-      .lte('timestamp', fim);
-    const temEntradaProx = (batidasProx || []).some((b) => b.tipo === 'entrada');
-    if (!temEntradaProx) {
-      await excluirBatidasDiaPonto({
-        empresaId: params.empresaId,
-        userId: params.userIdColaborador,
-        dataISO: diaSaida,
-      });
-    }
-  }
+  const desejadosPorTipo = new Map(desejados.map((d) => [d.tipo, d]));
 
-  if (inserir.length === 0) {
+  if (desejados.length === 0) {
+    await excluirBatidasDiaPonto({
+      empresaId: params.empresaId,
+      userId: params.userIdColaborador,
+      dataISO: params.dataISO,
+    });
     await removerOcorrenciaDiaPonto({
       empresaId: params.empresaId,
       userId: params.userIdColaborador,
@@ -127,32 +192,65 @@ export async function salvarAjusteManualDiaPonto(params: {
     return [];
   }
 
-  const rows = inserir.map((item) => ({
-    empresa_id: params.empresaId,
-    user_id: params.userIdColaborador,
-    tipo: item.tipo,
-    timestamp: item.timestamp,
-    origem: 'ajuste_manual' as const,
-    ajustado_por: params.adminUserId,
-    motivo_ajuste: motivo,
-    observacao: `[Ajuste manual] ${motivo}`,
-  }));
+  for (const tipo of TIPOS_ORDEM) {
+    const desejado = desejadosPorTipo.get(tipo);
+    const atual = existentesPorTipo.get(tipo);
 
-  const { data, error } = await supabase.from('ponto_registros').insert(rows).select('*');
-  if (error) throw error;
+    if (!desejado && !atual) continue;
 
-  const batidas = (data || []).map((row) => mapRowToBatida(row as Record<string, unknown>));
-  const storageKey = montarChaveStoragePonto(
-    params.empresaId,
-    params.userIdColaborador,
-    params.dataISO,
-  );
-  gravarBatidasLocal(storageKey, batidas);
+    if (!desejado && atual) {
+      const { error } = await supabase.from('ponto_registros').delete().eq('id', atual.id);
+      if (error) throw error;
+      continue;
+    }
+
+    if (desejado && !atual) {
+      const { error } = await supabase.from('ponto_registros').insert({
+        empresa_id: params.empresaId,
+        user_id: params.userIdColaborador,
+        tipo: desejado.tipo,
+        timestamp: desejado.timestamp,
+        origem: 'ajuste_manual',
+        ajustado_por: params.adminUserId,
+        motivo_ajuste: motivo,
+        observacao: `[Ajuste manual] ${motivo}`,
+      });
+      if (error) throw error;
+      continue;
+    }
+
+    if (desejado && atual) {
+      if (batidasMesmoHorarioMinuto(atual.timestamp, desejado.timestamp)) {
+        continue;
+      }
+
+      const { error } = await supabase
+        .from('ponto_registros')
+        .update({
+          timestamp: desejado.timestamp,
+          origem: 'ajuste_manual',
+          ajustado_por: params.adminUserId,
+          motivo_ajuste: motivo,
+          observacao: `[Ajuste manual] ${motivo}`,
+        })
+        .eq('id', atual.id);
+
+      if (error) throw error;
+    }
+  }
+
+  const batidas = await recarregarBatidasDiaStorage({
+    empresaId: params.empresaId,
+    userId: params.userIdColaborador,
+    dataISO: params.dataISO,
+  });
+
   await removerOcorrenciaDiaPonto({
     empresaId: params.empresaId,
     userId: params.userIdColaborador,
     dataISO: params.dataISO,
   });
+
   return batidas;
 }
 
@@ -237,4 +335,30 @@ export async function salvarOcorrenciaDiaPonto(params: {
 
   if (error) throw error;
   return mapRowOcorrencia(data as Record<string, unknown>);
+}
+
+/** Salva intervalo implícito (1h/2h ou desativado) no perfil do colaborador. */
+export async function salvarIntervaloEntradaSaidaColaborador(params: {
+  userId: string;
+  permissoesAtuais?: Record<string, unknown> | null;
+  ativo: boolean;
+  minutos: 60 | 120;
+}): Promise<Record<string, unknown>> {
+  const atual = getUserPontoConfig(params.permissoesAtuais);
+  const novoPermissoes = {
+    ...(params.permissoesAtuais || {}),
+    ponto_config: {
+      ...atual,
+      intervalo_entrada_saida_ativo: params.ativo,
+      intervalo_entrada_saida_minutos: params.ativo ? params.minutos : undefined,
+    },
+  };
+
+  const { error } = await supabase
+    .from('users')
+    .update({ permissoes: novoPermissoes, updated_at: new Date().toISOString() })
+    .eq('id', params.userId);
+
+  if (error) throw error;
+  return novoPermissoes;
 }

@@ -95,6 +95,15 @@ interface ClienteCobranca {
     valor_total_centavos: number;
     maior_dias_atraso: number;
     ultima_data_vencimento: string;
+    cliente_endereco_logradouro?: string;
+    cliente_endereco_numero?: string;
+    cliente_endereco_complemento?: string;
+    cliente_endereco_bairro?: string;
+    cliente_endereco_cep?: string;
+    cliente_endereco_quadra?: string;
+    cliente_endereco_lote?: string;
+    cliente_endereco_cidade?: string;
+    cliente_endereco_uf?: string;
     resumo: ClienteCobrancaResumo;
 }
 
@@ -140,6 +149,14 @@ const MOTIVO_VISITA_LABELS: Record<MotivoVisita, string> = {
 const formatCurrency = (centavos: number) =>
     `R$ ${(centavos / 100).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`;
 
+const resolverContratoCodigoCliente = (parcelas: CobrancaPendente[]): string => {
+    for (const parcela of parcelas) {
+        const codigo = String(parcela.contrato_codigo || '').trim();
+        if (codigo && codigo !== '-') return codigo;
+    }
+    return '-';
+};
+
 export const CobrancasPendentes: React.FC = () => {
     const [searchParams, setSearchParams] = useSearchParams();
     const { user } = useAuth();
@@ -165,6 +182,7 @@ export const CobrancasPendentes: React.FC = () => {
     const [bairroSituacaoFilter, setBairroSituacaoFilter] = useState<'todos' | 'pendentes' | 'baixadas'>('todos');
     const [atendimentoModal, setAtendimentoModal] = useState<AtendimentoModalState | null>(null);
     const [parcelasClienteModal, setParcelasClienteModal] = useState<ClienteCobranca | null>(null);
+    const [enderecoModalCliente, setEnderecoModalCliente] = useState<ClienteCobranca | null>(null);
     const [parcelasSelecionadas, setParcelasSelecionadas] = useState<Record<string, string[]>>({});
     const [opcoesAvancadasAbertas, setOpcoesAvancadasAbertas] = useState(false);
     const [filtrosAvancadosAbertos, setFiltrosAvancadosAbertos] = useState(false);
@@ -499,6 +517,14 @@ export const CobrancasPendentes: React.FC = () => {
                     valor_total_centavos: parcela.valor_centavos,
                     maior_dias_atraso: parcela.dias_atraso,
                     ultima_data_vencimento: parcela.data_vencimento,
+                    cliente_endereco_logradouro: parcela.cliente_endereco_logradouro,
+                    cliente_endereco_numero: parcela.cliente_endereco_numero,
+                    cliente_endereco_complemento: parcela.cliente_endereco_complemento,
+                    cliente_endereco_cep: parcela.cliente_endereco_cep,
+                    cliente_endereco_quadra: parcela.cliente_endereco_quadra,
+                    cliente_endereco_lote: parcela.cliente_endereco_lote,
+                    cliente_endereco_cidade: parcela.cliente_endereco_cidade,
+                    cliente_endereco_uf: parcela.cliente_endereco_uf,
                 });
                 return;
             }
@@ -872,7 +898,11 @@ export const CobrancasPendentes: React.FC = () => {
         );
         const contaPadrao = resolverContaPadraoDestinoCobrador(contasFiltradas, vinculos);
 
-        const modoReciboPadrao: ModoReciboBaixaCobrador = isNavegadorMobile() ? 'pdf' : 'termica';
+        const modoReciboPadrao: ModoReciboBaixaCobrador = loadReciboTermicoConfigCobrador().impressoraBluetooth?.id
+            ? 'termica'
+            : isNavegadorMobile()
+              ? 'pdf'
+              : 'termica';
 
         setAtendimentoModal({
             cliente,
@@ -925,8 +955,7 @@ export const CobrancasPendentes: React.FC = () => {
             return;
         }
 
-        const querPdf =
-            atendimentoModal.modo_recibo === 'pdf' || isNavegadorMobile();
+        const querPdf = atendimentoModal.modo_recibo === 'pdf';
         const janelaPdf = querPdf
             ? reservarJanelaImpressaoPdf('Gerando recibo PDF…')
             : null;
@@ -1126,13 +1155,9 @@ export const CobrancasPendentes: React.FC = () => {
             window.dispatchEvent(new CustomEvent('fin-contas-receber-updated'));
 
             try {
-                const modoImpressao: ModoReciboBaixaCobrador =
-                    atendimentoModal.modo_recibo === 'termica' && isNavegadorMobile()
-                        ? 'pdf'
-                        : atendimentoModal.modo_recibo;
                 const modo = await imprimirReciboBaixaCobrador({
                     janelaPdf: janelaPdf ?? undefined,
-                    modo: modoImpressao,
+                    modo: atendimentoModal.modo_recibo,
                     clienteId: cliente.cliente_id,
                     clienteNome: cliente.cliente_nome,
                     parcelas: parcelasBaixa.map((p) => ({
@@ -1270,6 +1295,185 @@ export const CobrancasPendentes: React.FC = () => {
         } else {
             setSearchParams({});
         }
+    };
+
+    const renderEnderecoModal = () => {
+        if (!enderecoModalCliente) return null;
+        const cliente = enderecoModalCliente;
+
+        const parts: string[] = [];
+        if (cliente.cliente_endereco_logradouro) {
+            let street = cliente.cliente_endereco_logradouro;
+            if (cliente.cliente_endereco_numero) {
+                street += `, ${cliente.cliente_endereco_numero}`;
+            }
+            parts.push(street);
+        }
+        
+        let ql = '';
+        if (cliente.cliente_endereco_quadra) {
+            ql += `Quadra ${cliente.cliente_endereco_quadra}`;
+        }
+        if (cliente.cliente_endereco_lote) {
+            if (ql) ql += ' ';
+            ql += `Lote ${cliente.cliente_endereco_lote}`;
+        }
+        if (ql) {
+            parts.push(ql);
+        }
+
+        if (cliente.cliente_endereco_bairro) {
+            parts.push(cliente.cliente_endereco_bairro);
+        }
+
+        let cidUf = '';
+        if (cliente.cliente_endereco_cidade) {
+            cidUf += cliente.cliente_endereco_cidade;
+        }
+        if (cliente.cliente_endereco_uf) {
+            if (cidUf) cidUf += ' - ';
+            cidUf += cliente.cliente_endereco_uf;
+        }
+        if (cidUf) {
+            parts.push(cidUf);
+        }
+
+        if (cliente.cliente_endereco_cep) {
+            parts.push(`CEP ${cliente.cliente_endereco_cep}`);
+        }
+
+        const formattedQuery = parts.join(', ');
+
+        const handleStartTrip = () => {
+            const url = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(formattedQuery)}`;
+            window.open(url, '_blank', 'noopener,noreferrer');
+            setEnderecoModalCliente(null);
+        };
+
+        const formatCep = (cep?: string) => {
+            if (!cep) return '-';
+            const digits = cep.replace(/\D/g, '');
+            if (digits.length === 8) {
+                return `${digits.slice(0, 5)}-${digits.slice(5)}`;
+            }
+            return cep;
+        };
+
+        return (
+            <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4 animate-fade-in" onClick={() => setEnderecoModalCliente(null)}>
+                <div 
+                    className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl max-w-md w-full overflow-hidden transition-all transform scale-100 border border-gray-100 dark:border-slate-800"
+                    onClick={(e) => e.stopPropagation()}
+                >
+                    {/* Header */}
+                    <div className="p-5 border-b dark:border-slate-800 shrink-0 bg-gray-50/50 dark:bg-slate-900/50 flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                            <div className="p-2 rounded-lg bg-blue-50 dark:bg-blue-950/40 text-blue-600 dark:text-blue-400">
+                                <MapPin className="h-5 w-5" />
+                            </div>
+                            <div>
+                                <h3 className="font-bold text-gray-900 dark:text-slate-100 text-base leading-tight">Endereço de Cobrança</h3>
+                                <p className="text-xs text-gray-500 dark:text-slate-400 mt-0.5">{cliente.cliente_nome}</p>
+                            </div>
+                        </div>
+                        <button 
+                            type="button" 
+                            onClick={() => setEnderecoModalCliente(null)}
+                            className="p-1.5 rounded-lg text-gray-400 hover:text-gray-600 dark:hover:text-slate-200 hover:bg-gray-105 dark:hover:bg-slate-800 transition-colors"
+                        >
+                            <X className="h-4 w-4" />
+                        </button>
+                    </div>
+
+                    {/* Body */}
+                    <div className="p-5 space-y-4">
+                        <div className="space-y-3">
+                            {/* Logradouro e Número */}
+                            <div>
+                                <label className="text-[10px] uppercase font-semibold text-gray-400 dark:text-slate-500 tracking-wider">Logradouro / Número</label>
+                                <p className="text-sm font-semibold text-gray-800 dark:text-slate-200 mt-0.5">
+                                    {cliente.cliente_endereco_logradouro || '-'}, {cliente.cliente_endereco_numero || 'S/N'}
+                                </p>
+                            </div>
+
+                            {/* Complemento */}
+                            {cliente.cliente_endereco_complemento && (
+                                <div>
+                                    <label className="text-[10px] uppercase font-semibold text-gray-400 dark:text-slate-500 tracking-wider">Complemento</label>
+                                    <p className="text-sm text-gray-700 dark:text-slate-300 mt-0.5">{cliente.cliente_endereco_complemento}</p>
+                                </div>
+                            )}
+
+                            {/* Bairro e Cidade/UF */}
+                            <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label className="text-[10px] uppercase font-semibold text-gray-400 dark:text-slate-500 tracking-wider">Bairro</label>
+                                    <p className="text-sm text-gray-700 dark:text-slate-300 mt-0.5">{cliente.cliente_endereco_bairro || '-'}</p>
+                                </div>
+                                <div>
+                                    <label className="text-[10px] uppercase font-semibold text-gray-400 dark:text-slate-500 tracking-wider">Cidade / UF</label>
+                                    <p className="text-sm text-gray-700 dark:text-slate-300 mt-0.5">
+                                        {cliente.cliente_endereco_cidade || '-'} - {cliente.cliente_endereco_uf || '-'}
+                                    </p>
+                                </div>
+                            </div>
+
+                            {/* CEP and Quadra/Lote */}
+                            <div className="grid grid-cols-2 gap-4">
+                                <div>
+                                    <label className="text-[10px] uppercase font-semibold text-gray-400 dark:text-slate-500 tracking-wider">CEP</label>
+                                    <p className="text-sm font-mono text-gray-700 dark:text-slate-300 mt-0.5">{formatCep(cliente.cliente_endereco_cep)}</p>
+                                </div>
+                                {(cliente.cliente_endereco_quadra || cliente.cliente_endereco_lote) && (
+                                    <div>
+                                        <label className="text-[10px] uppercase font-semibold text-gray-400 dark:text-slate-500 tracking-wider">Quadra / Lote</label>
+                                        <div className="flex gap-1.5 mt-0.5">
+                                            {cliente.cliente_endereco_quadra && (
+                                                <span className="inline-flex items-center text-xs font-bold px-2 py-0.5 rounded bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-400 border border-blue-100 dark:border-blue-900/50">
+                                                    Q: {cliente.cliente_endereco_quadra}
+                                                </span>
+                                            )}
+                                            {cliente.cliente_endereco_lote && (
+                                                <span className="inline-flex items-center text-xs font-bold px-2 py-0.5 rounded bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-400 border border-blue-100 dark:border-blue-900/50">
+                                                    L: {cliente.cliente_endereco_lote}
+                                                </span>
+                                            )}
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+
+                        {/* Query Preview card */}
+                        <div className="rounded-xl border border-dashed border-gray-200 dark:border-slate-800 bg-gray-50/50 dark:bg-slate-900/30 p-3">
+                            <p className="text-[9px] uppercase font-bold text-gray-400 dark:text-slate-500 tracking-wider">Pesquisa no Google Maps</p>
+                            <p className="text-xs text-gray-650 dark:text-slate-400 mt-1 italic leading-relaxed">
+                                "{formattedQuery}"
+                            </p>
+                        </div>
+                    </div>
+
+                    {/* Footer Actions */}
+                    <div className="px-5 py-4 border-t dark:border-slate-800 bg-gray-50/50 dark:bg-slate-900/50 flex items-center justify-end gap-3">
+                        <button
+                            type="button"
+                            onClick={() => setEnderecoModalCliente(null)}
+                            className="px-4 py-2 text-sm font-medium rounded-xl border border-gray-200 dark:border-slate-700 text-gray-700 dark:text-slate-300 bg-white dark:bg-slate-800 hover:bg-gray-50 dark:hover:bg-slate-750 transition-colors"
+                        >
+                            Fechar
+                        </button>
+                        <button
+                            type="button"
+                            onClick={handleStartTrip}
+                            className="px-4 py-2 text-sm font-semibold rounded-xl bg-blue-600 hover:bg-blue-700 text-white shadow-md hover:shadow-lg transition-all flex items-center gap-2 cursor-pointer"
+                        >
+                            <Navigation className="h-4 w-4" />
+                            Ir na viagem
+                        </button>
+                    </div>
+                </div>
+            </div>
+        );
     };
 
     const renderParcelasClienteModal = () => {
@@ -1460,6 +1664,7 @@ export const CobrancasPendentes: React.FC = () => {
         const parcelasBaixa = parcelasMarcadasCliente(cliente);
         const unit = valorUnitarioParcela(cliente, parcelasBaixa[0] || parcelasPendentesCliente(cliente)[0]);
         const totalModal = unit * parcelasBaixa.length;
+        const contratoCodigo = resolverContratoCodigoCliente(cliente.parcelas);
         return (
             <div className="fixed inset-0 z-[60] bg-black/40 flex items-center justify-center p-4 animate-fade-in">
                 <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl max-w-md w-full max-h-[95vh] flex flex-col overflow-hidden transition-all transform scale-100">
@@ -1478,7 +1683,7 @@ export const CobrancasPendentes: React.FC = () => {
                         <div className="mt-2">
                             <p className="text-sm font-semibold text-gray-900 dark:text-slate-100">{cliente.cliente_nome}</p>
                             <p className="text-xs text-indigo-600 dark:text-indigo-400 font-medium">
-                                Contrato: {cliente.parcelas[0]?.contrato_codigo || '-'} · Plano: {cliente.plano_nome}
+                                Contrato: {contratoCodigo} · Plano: {cliente.plano_nome}
                             </p>
                         </div>
 
@@ -1898,6 +2103,8 @@ export const CobrancasPendentes: React.FC = () => {
                 <CobrancasReimprimirReciboTab
                     empresaIdsFiltro={empresaIdsFiltro}
                     cobradorIdFiltro={modoCobrador ? meuCobradorId : cobradorFilter || null}
+                    restricaoCobrador={modoCobrador}
+                    exigirMotivoAdmin={modoGestor}
                 />
             )}
 
@@ -2432,6 +2639,7 @@ export const CobrancasPendentes: React.FC = () => {
                                     {grupo.clientes.map((cliente) => {
                                         const maiorAtraso = Math.max(0, ...cliente.parcelas.map((p) => p.dias_atraso));
                                         const vencimentoMaisAntigo = cliente.ultima_data_vencimento;
+                                        const contratoCodigo = resolverContratoCodigoCliente(cliente.parcelas);
                                         const { resumo } = cliente;
                                         const tempoCls =
                                             resumo.situacao === 'nunca_visitado'
@@ -2489,6 +2697,8 @@ export const CobrancasPendentes: React.FC = () => {
                                                         ) : null}
 
                                                         <p className="text-gray-500 dark:text-slate-500 font-medium">
+                                                            {contratoCodigo !== '-' ? `Contrato: ${contratoCodigo}` : ''}
+                                                            {contratoCodigo !== '-' && cliente.plano_nome ? ' · ' : ''}
                                                             {cliente.plano_nome ? `Plano: ${cliente.plano_nome}` : ''}
                                                             {cliente.valor_mensal_plano_centavos > 0
                                                                 ? ` · Mensalidade: ${formatCurrency(cliente.valor_mensal_plano_centavos)}`
@@ -2528,15 +2738,14 @@ export const CobrancasPendentes: React.FC = () => {
                                                             </>
                                                         ) : null}
                                                         {cliente.cliente_endereco ? (
-                                                            <a
-                                                                href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(cliente.cliente_nome + ', ' + cliente.cliente_endereco)}`}
-                                                                target="_blank"
-                                                                rel="noopener noreferrer"
-                                                                title="Como chegar (Google Maps)"
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => setEnderecoModalCliente(cliente)}
+                                                                title="Como chegar (Visualizar endereço)"
                                                                 className="inline-flex items-center justify-center h-9 w-9 rounded-full bg-blue-50 hover:bg-blue-100 text-blue-700 dark:bg-blue-950/40 dark:hover:bg-blue-900/60 dark:text-blue-300 transition-colors border border-blue-100/50 dark:border-blue-900/30"
                                                             >
                                                                 <Navigation className="h-4 w-4" />
-                                                            </a>
+                                                            </button>
                                                         ) : null}
                                                         {resumo.situacao !== 'quitado' && (
                                                             <button
@@ -2615,6 +2824,7 @@ export const CobrancasPendentes: React.FC = () => {
 
             {renderParcelasClienteModal()}
             {renderAtendimentoModal()}
+            {renderEnderecoModal()}
         </div>
     );
 };

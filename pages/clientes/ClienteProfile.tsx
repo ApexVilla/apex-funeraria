@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams, Link } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
 import { 
   User, Phone, Mail, CreditCard, Shield, Users, 
@@ -65,7 +65,15 @@ import { carregarBeneficiariosDoContrato, filtrarBeneficiariosContrato } from '.
 import { buildFichaCadastroPdfBlob } from '../../lib/FichaCadastroService';
 import { downloadPdfBlob, printPdfBlob } from '../../lib/printPdfBlob';
 import { CobradorCarteiraClientePanel } from '../../components/cobradores/CobradorCarteiraClientePanel';
+import { ClienteEnderecosPanel } from '../../components/clientes/ClienteEnderecosPanel';
 import { bairroCobrancaCliente } from '../../lib/cobradorSugestaoBairro';
+import { rotuloQuadraLote } from '../../lib/clienteEndereco';
+import {
+  buscarPropostaOrigemCliente,
+  formatarNumeroProposta,
+  type PropostaOrigemCliente,
+} from '../../lib/propostaOrigemCliente';
+import { labelStatusProposta } from '../../lib/propostaStatusLabels';
 import { useEmpresaContextoAtivo } from '../../lib/EmpresaContextoAtivo';
 import { ParcelasPorAnoAccordion } from '../../components/clientes/ParcelasPorAnoAccordion';
 import {
@@ -124,6 +132,7 @@ type TabKey =
   | 'cobranca'
   | 'carteirinha'
   | 'beneficiarios'
+  | 'enderecos'
   | 'documentos'
   | 'timeline'
   | 'auditoria';
@@ -143,6 +152,7 @@ const TABS: TabItem[] = [
   { key: 'cobranca', label: 'Cobrança', icon: Banknote },
   { key: 'carteirinha', label: 'Carteirinha', icon: Wallet },
   { key: 'beneficiarios', label: 'Beneficiários', icon: Users },
+  { key: 'enderecos', label: 'Endereço', icon: MapPin },
   { key: 'timeline', label: 'Timeline', icon: History },
   { key: 'auditoria', label: 'Auditoria', icon: Shield },
   { key: 'documentos', label: 'Documentos', icon: FileText },
@@ -521,6 +531,7 @@ export const ClienteProfile: React.FC = () => {
   const [isMigracaoCobrancaOpen, setIsMigracaoCobrancaOpen] = useState(false);
   const [reiniciandoCobrancaMigracao, setReiniciandoCobrancaMigracao] = useState(false);
   const [reativandoInerciaContratoId, setReativandoInerciaContratoId] = useState<string | null>(null);
+  const [propostaOrigem, setPropostaOrigem] = useState<PropostaOrigemCliente | null>(null);
   const inerciaAvaliadaNaAbaRef = useRef('');
 
   const contratoAtivo = useMemo(
@@ -768,6 +779,15 @@ export const ClienteProfile: React.FC = () => {
             ]);
             setMensalidades(m);
             setAssinaturasDigitais(sigs);
+            const { data: assRows } = await supabase
+              .from('assinaturas')
+              .select('id')
+              .eq('cliente_id', id);
+            const proposta = await buscarPropostaOrigemCliente(
+              id,
+              (assRows || []).map((r) => String(r.id)),
+            );
+            setPropostaOrigem(proposta);
           }
         } catch (error) {
           console.error('Error loading client data:', error);
@@ -1024,6 +1044,7 @@ export const ClienteProfile: React.FC = () => {
       contratoPrincipal?.codigo ? `Contrato: ${contratoPrincipal.codigo}` : null,
       `Status: ${(statusLabel || '').toUpperCase()}`,
       clienteAtivo.endereco_logradouro ? `Endereço: ${clienteAtivo.endereco_logradouro}, ${clienteAtivo.endereco_numero || 'S/N'}${clienteAtivo.endereco_complemento ? ` - ${clienteAtivo.endereco_complemento}` : ''}` : null,
+      rotuloQuadraLote(clienteAtivo.endereco_quadra, clienteAtivo.endereco_lote) || null,
       clienteAtivo.endereco_bairro ? `Bairro: ${clienteAtivo.endereco_bairro}` : null,
       clienteAtivo.endereco_cidade ? `Cidade: ${clienteAtivo.endereco_cidade}/${clienteAtivo.endereco_estado || ''}` : null,
       clienteAtivo.endereco_cep ? `CEP: ${clienteAtivo.endereco_cep}` : null,
@@ -1674,10 +1695,24 @@ export const ClienteProfile: React.FC = () => {
                 <User className="h-5 w-5 text-blue-600" /> Dados Pessoais
               </h3>
               <dl className="space-y-4 text-sm">
-                {(cliente.origem_canal || cliente.tipo_vendedor || cliente.vendedor_id) && (
+                {(cliente.origem_canal || cliente.tipo_vendedor || cliente.vendedor_id || propostaOrigem) && (
                   <div className="pb-3 mb-1 border-b border-dashed">
                     <dt className="text-gray-500 dark:text-slate-400 font-medium uppercase text-[10px] tracking-wider mb-1">CRM</dt>
                     <dd className="text-gray-900 dark:text-white font-semibold space-y-1">
+                      {propostaOrigem ? (
+                        <span className="block">
+                          Proposta de origem:{' '}
+                          <Link
+                            to={`/venda/propostas/${propostaOrigem.id}/editar`}
+                            className="text-indigo-600 hover:text-indigo-800 hover:underline font-black"
+                          >
+                            Nº {formatarNumeroProposta(propostaOrigem.sequencial)}
+                          </Link>
+                          <span className="text-gray-500 dark:text-slate-400 font-medium text-xs ml-1">
+                            ({labelStatusProposta(propostaOrigem.status)})
+                          </span>
+                        </span>
+                      ) : null}
                       {cliente.tipo_vendedor === 'escritorio' || !cliente.vendedor_id ? (
                         <span className="block">Vendedor responsável: Escritório</span>
                       ) : cliente.vendedor_id ? (
@@ -1703,34 +1738,29 @@ export const ClienteProfile: React.FC = () => {
                   <dt className="text-gray-500 dark:text-slate-400 font-medium uppercase text-[10px] tracking-wider">RG</dt>
                   <dd className="text-gray-900 dark:text-white font-semibold">{cliente.rg || '-'}</dd>
                 </div>
-                <div>
-                  <dt className="text-gray-500 dark:text-slate-400 font-medium uppercase text-[10px] tracking-wider">Endereço Residencial</dt>
-                  <dd className="text-gray-900 dark:text-white leading-relaxed font-semibold">
-                    {cliente.endereco_logradouro}, {cliente.endereco_numero}
-                    {cliente.endereco_complemento && ` - ${cliente.endereco_complemento}`}
-                    <br />
-                    {cliente.endereco_bairro} - {cliente.endereco_cidade}/{cliente.endereco_estado}
-                    <br />
-                    CEP: {cliente.endereco_cep}
-                  </dd>
-                </div>
-                {cliente.usa_endereco_residencial_cobranca === false && (
-                  <div className="pt-2 border-t border-dashed">
-                    <dt className="text-amber-600 font-bold uppercase text-[10px] tracking-wider flex items-center gap-1">
-                      <CreditCard className="h-3 w-3" /> Endereço de Cobrança
+                {propostaOrigem?.data_pedido || propostaOrigem?.contrato_gerado_em ? (
+                  <div>
+                    <dt className="text-gray-500 dark:text-slate-400 font-medium uppercase text-[10px] tracking-wider">
+                      Datas da proposta
                     </dt>
-                    <dd className="text-gray-900 dark:text-white leading-relaxed text-xs">
-                      {cliente.endereco_cob_logradouro}, {cliente.endereco_cob_numero}
-                      {cliente.endereco_cob_complemento && ` - ${cliente.endereco_cob_complemento}`}
-                      <br />
-                      {cliente.endereco_cob_bairro} - {cliente.endereco_cob_cidade}/{cliente.endereco_cob_uf}
-                      <br />
-                      CEP: {cliente.endereco_cob_cep}
+                    <dd className="text-gray-900 dark:text-white font-semibold space-y-0.5 text-xs">
+                      {propostaOrigem.data_pedido ? (
+                        <span className="block">
+                          Pedido: {formatarDataIsoPtBr(propostaOrigem.data_pedido)}
+                        </span>
+                      ) : null}
+                      {propostaOrigem.contrato_gerado_em ? (
+                        <span className="block text-indigo-700">
+                          Contrato gerado: {formatarDataIsoPtBr(propostaOrigem.contrato_gerado_em)}
+                        </span>
+                      ) : null}
                     </dd>
                   </div>
-                )}
+                ) : null}
               </dl>
             </Card>
+
+            <ClienteEnderecosPanel cliente={cliente} />
 
             <Card className="p-6">
               <h3 className="font-bold text-gray-900 dark:text-white mb-4 flex items-center gap-2 text-indigo-600">
@@ -2480,6 +2510,29 @@ export const ClienteProfile: React.FC = () => {
               )}
             </div>
           </Card>
+        )}
+
+        {activeTab === 'enderecos' && (
+          <div className="space-y-4">
+            <div className="flex justify-between items-center bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm">
+              <div>
+                <h3 className="font-bold text-gray-900 dark:text-white flex items-center gap-2">
+                  <MapPin className="h-5 w-5 text-blue-600" /> Endereços do Cliente
+                </h3>
+                <p className="text-xs text-gray-500 dark:text-slate-400 mt-1">
+                  Gerencie o endereço residencial e de cobrança do titular.
+                </p>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => navigate(`/clientes/${cliente?.id}/editar?passo=2`)}
+              >
+                <Edit className="h-4 w-4 mr-2" /> Editar Endereços
+              </Button>
+            </div>
+            {cliente && <ClienteEnderecosPanel cliente={cliente} />}
+          </div>
         )}
 
         {activeTab === 'auditoria' && (

@@ -8,7 +8,7 @@ import { Clock, Coffee, LogIn, LogOut, User, Briefcase, CalendarDays, ArrowRight
 import {
   getUserPontoConfig,
   calcularTrabalhadoMinutosColaborador,
-  INTERVALO_ALMOCO_IMPLICITO_ENTRADA_SAIDA_MINUTOS,
+  intervaloAlmocoImplicitoEntradaSaidaMinutos,
   jornadaPontoFinalizada,
   labelRegimePonto,
   LABEL_TIPO_BATIDA,
@@ -214,8 +214,8 @@ export const PontoRegistro: React.FC = () => {
   const jornadaFinalizada = jornadaPontoFinalizada(batidas, roleColaborador);
 
   const minutosTrabalhados = useMemo(
-    () => calcularTrabalhadoMinutosColaborador(batidas, roleColaborador, hoje),
-    [batidas, roleColaborador, hoje],
+    () => calcularTrabalhadoMinutosColaborador(batidas, roleColaborador, hoje, user?.permissoes),
+    [batidas, roleColaborador, hoje, user?.permissoes],
   );
   const temBatidaHoje = batidas.some((b) => diaLocalFromTimestamp(b.timestamp) === hoje);
   const metaDiaHoje = metaMinutosNoDia(pontoConfig, hoje, temBatidaHoje);
@@ -545,7 +545,7 @@ export const PontoRegistro: React.FC = () => {
                 <>
                   Registre <strong>Entrada</strong> ao chegar e <strong>Saída</strong> ao encerrar o expediente.
                   São duas marcações por dia. Nos dias úteis, o intervalo de almoço de{' '}
-                  <strong>{formatarDuracaoPonto(INTERVALO_ALMOCO_IMPLICITO_ENTRADA_SAIDA_MINUTOS)}</strong> é
+                  <strong>{formatarDuracaoPonto(intervaloAlmocoImplicitoEntradaSaidaMinutos(roleColaborador, user?.permissoes))}</strong> é
                   descontado automaticamente do total trabalhado — não é necessário bater ponto no intervalo.
                   Nos sábados de plantão não há intervalo de almoço.
                 </>

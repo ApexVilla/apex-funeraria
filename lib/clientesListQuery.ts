@@ -33,6 +33,7 @@ export const CLIENTES_LIST_SELECT = [
   'endereco_cob_cidade',
   'endereco_cob_uf',
   'origem_canal',
+  'campos_personalizados',
 ].join(',');
 
 export const CLIENTES_LIST_TABLE = 'clientes' as const;

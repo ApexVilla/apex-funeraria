@@ -5,12 +5,18 @@ import { Button, Input, Select, Card } from '../../components/ui/Components';
 import { useToast } from '../../lib/ToastStore';
 import { useEmpresaIdsOperacao } from '../../lib/useEmpresaIdsOperacao';
 import {
+    enriquecerRecebimentosComReimpressao,
     listarRecebimentosCampo,
     listarCobradoresSelect,
     type RecebimentoCampoDto,
 } from '../../lib/cobRecebimentosSupabase';
 import { useCobradorEscopo } from '../../lib/useCobradorEscopo';
+import { useAuth } from '../../lib/AuthContext';
 import { reimprimirReciboRecebimentoCampo } from '../../lib/cobradorReciboCampo';
+import {
+    COBRADOR_REIMPRESSAO_DIAS_LIMITE,
+    COBRADOR_REIMPRESSAO_LIMITE,
+} from '../../lib/cobradorReciboReimpressao';
 import {
     carregarContextoEmpresaRecibo,
     imprimirRelatorioCobradorPeriodo,
@@ -35,6 +41,7 @@ import {
     nomeArquivoPdfCaixaCobrador,
 } from '../../lib/cobradorCaixaPdfService';
 import { ImpressoraBluetoothSetup } from '../../components/cobradores/ImpressoraBluetoothSetup';
+import { CobradorReimpressaoMotivoModal } from '../../components/cobradores/CobradorReimpressaoMotivoModal';
 import { mensagemErroSupabase } from '../../lib/supabaseErrorMessage';
 
 const formatCurrency = (centavos: number) =>
@@ -51,8 +58,10 @@ function hojeIso(): string {
 
 export const CobradorImpressoes: React.FC = () => {
     const { showToast } = useToast();
+    const { user } = useAuth();
     const { empresaIdsFiltro, dataRevisionEmpresa } = useEmpresaIdsOperacao();
-    const { cobradorRestrito, meuCobradorId, vinculoLoading } = useCobradorEscopo(empresaIdsFiltro);
+    const { cobradorRestrito, meuCobradorId, vinculoLoading, podeVerTodos } = useCobradorEscopo(empresaIdsFiltro);
+    const exigirMotivoAdmin = podeVerTodos;
 
     const [cobradores, setCobradores] = useState<{ id: string; nome: string }[]>([]);
     const [cobradorId, setCobradorId] = useState('');
@@ -66,6 +75,8 @@ export const CobradorImpressoes: React.FC = () => {
     const [gerandoRelatorio, setGerandoRelatorio] = useState(false);
     const [gerandoPdfCaixa, setGerandoPdfCaixa] = useState(false);
     const [reimprimindoId, setReimprimindoId] = useState<string | null>(null);
+    const [motivoModalAberto, setMotivoModalAberto] = useState(false);
+    const [reimpressaoPendenteId, setReimpressaoPendenteId] = useState<string | null>(null);
 
     const cobradorIdEfetivo = cobradorRestrito ? meuCobradorId || '' : cobradorId;
 
@@ -133,7 +144,10 @@ export const CobradorImpressoes: React.FC = () => {
                 data_inicio: dataInicio,
                 data_fim: dataFim,
             });
-            setItems(rows);
+            const enriquecidos = await enriquecerRecebimentosComReimpressao(rows, {
+                cobradorRestrito: cobradorRestrito,
+            });
+            setItems(enriquecidos);
         } catch (e) {
             showToast(mensagemErroSupabase(e, 'Erro ao carregar recebimentos'), 'error');
         } finally {
@@ -145,16 +159,38 @@ export const CobradorImpressoes: React.FC = () => {
         if (cobradorIdConsulta) void carregar();
     }, [cobradorIdConsulta, dataRevisionEmpresa]);
 
-    const handleReimprimir = async (id: string) => {
+    const executarReimpressao = async (id: string, motivoAdmin?: string) => {
         setReimprimindoId(id);
         try {
-            await reimprimirReciboRecebimentoCampo(id, empresaIdsFiltro, modoImpressao);
+            await reimprimirReciboRecebimentoCampo(id, empresaIdsFiltro, modoImpressao, undefined, {
+                cobradorRestrito: cobradorRestrito,
+                exigirMotivoAdmin,
+                motivoAdmin,
+                usuarioId: user?.id || null,
+            });
             showToast('Recibo enviado para impressão.', 'success');
+            await carregar();
         } catch (e) {
             showToast(e instanceof Error ? e.message : 'Falha ao reimprimir.', 'error');
         } finally {
             setReimprimindoId(null);
+            setMotivoModalAberto(false);
+            setReimpressaoPendenteId(null);
         }
+    };
+
+    const handleReimprimir = (id: string) => {
+        const item = items.find((i) => i.id === id);
+        if (cobradorRestrito && item?.reimpressao_permitida === false) {
+            showToast(item.reimpressao_bloqueio || 'Reimpressão não permitida.', 'warning');
+            return;
+        }
+        if (exigirMotivoAdmin) {
+            setReimpressaoPendenteId(id);
+            setMotivoModalAberto(true);
+            return;
+        }
+        void executarReimpressao(id);
     };
 
     const payloadRelatorio = useCallback(async () => {
@@ -359,6 +395,20 @@ export const CobradorImpressoes: React.FC = () => {
 
             <ImpressoraBluetoothSetup />
 
+            {cobradorRestrito && (
+                <Card className="p-3 border-emerald-200 bg-emerald-50 text-emerald-950 text-sm">
+                    Reimpressão de recibo: até <strong>{COBRADOR_REIMPRESSAO_DIAS_LIMITE} dias</strong> após a baixa e
+                    no máximo <strong>{COBRADOR_REIMPRESSAO_LIMITE} vezes</strong> por parcela. Depois disso, solicite
+                    ao escritório.
+                </Card>
+            )}
+
+            {exigirMotivoAdmin && !cobradorRestrito && (
+                <Card className="p-3 border-indigo-200 bg-indigo-50 text-indigo-950 text-sm">
+                    Reimpressão pelo escritório exige <strong>motivo registrado</strong> para auditoria.
+                </Card>
+            )}
+
             <Card className="p-4 space-y-4">
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
                     <Select
@@ -554,8 +604,16 @@ export const CobradorImpressoes: React.FC = () => {
                                                 type="button"
                                                 size="sm"
                                                 variant="outline"
-                                                disabled={reimprimindoId === item.id}
-                                                onClick={() => void handleReimprimir(item.id)}
+                                                disabled={
+                                                    reimprimindoId === item.id
+                                                    || (cobradorRestrito && item.reimpressao_permitida === false)
+                                                }
+                                                title={
+                                                    cobradorRestrito && item.reimpressao_bloqueio
+                                                        ? item.reimpressao_bloqueio
+                                                        : undefined
+                                                }
+                                                onClick={() => handleReimprimir(item.id)}
                                             >
                                                 {modoImpressao === 'termica' ? (
                                                     <Bluetooth className="h-3.5 w-3.5 mr-1" />
@@ -579,6 +637,21 @@ export const CobradorImpressoes: React.FC = () => {
                 <strong> PDF do caixa:</strong> movimentações do caixa vinculado, igual ao da Tesouraria. Comprovantes
                 individuais: <strong>Reimprimir</strong> na tabela.
             </p>
+
+            <CobradorReimpressaoMotivoModal
+                isOpen={motivoModalAberto}
+                loading={reimprimindoId != null}
+                qtdRecebimentos={1}
+                onClose={() => {
+                    if (!reimprimindoId) {
+                        setMotivoModalAberto(false);
+                        setReimpressaoPendenteId(null);
+                    }
+                }}
+                onConfirm={async (motivo) => {
+                    if (reimpressaoPendenteId) await executarReimpressao(reimpressaoPendenteId, motivo);
+                }}
+            />
         </div>
     );
 };

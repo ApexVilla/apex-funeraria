@@ -8,7 +8,7 @@ import autoTable from 'jspdf-autotable';
 import { drawRelatorioComissaoFenixHeader, drawDocumentoPdfFooter, PDF_PALETTE } from '../../lib/documentoPdfLayout';
 import { PageHeader } from '../../components/common/PageHeader';
 import { Button, Input, Select, Card, DropdownMenuContent, DropdownMenuItem } from '../../components/ui/Components';
-import { useFinanceiro, formatCentavos, ContaPagar } from '../../lib/FinanceiroStore';
+import { useFinanceiro, formatCentavos, ContaPagar, PlanoContaItem } from '../../lib/FinanceiroStore';
 import { StatusFinanceiroBadge, EmptyFinanceiro, FinanceiroLoading, MoneyDisplay, StatCard } from '../../components/financeiro/FinanceiroComponents';
 import { contaPagarCodigoMatch } from '../../lib/proximoCodigoContaPagar';
 import { contaPagarEstaVencida, contaPagarStatusEfetivo } from '../../lib/finContaPagarStatus';
@@ -17,8 +17,18 @@ import { useEmpresaContextoAtivo } from '../../lib/EmpresaContextoAtivo';
 import { BaixarContaPagarModal } from '../../components/financeiro/BaixarContaPagarModal';
 import { DetalhesContaPagarModal } from '../../components/financeiro/DetalhesContaPagarModal';
 import { NovaContaPagarModal } from '../../components/financeiro/NovaContaPagarModal';
+import { Combobox } from '../../components/financeiro/Combobox';
+import { CompetenciaMesAnoInput } from '../../components/financeiro/CompetenciaMesAnoInput';
+import { EstornarContaPagarModal } from '../../components/financeiro/EstornarContaPagarModal';
 import { inferirTipoDocumentoPagar } from '../../lib/inferirTipoDocumento';
 import { supabase } from '../../lib/supabase';
+import {
+    centavosParaInputMoeda,
+    formatarMoedaInputAoSair,
+    parseInputMoedaParaCentavos,
+    sanitizarTextoMoedaInput,
+} from '../../lib/moedaInputUtils';
+import { normalizeSearchText } from '../../lib/textUtils';
 
 const TIPOS_DOCUMENTO: Array<{ value: string; label: string }> = [
     { value: 'fornecedor', label: 'Fornecedor' },
@@ -86,6 +96,19 @@ const EMPTY_COLUMN_FILTERS: Record<ColumnFilterKey, string[]> = {
 const formatDataBr = (iso?: string | null) =>
     iso ? new Date(iso + 'T00:00').toLocaleDateString('pt-BR') : '—';
 
+const formatDataHoraBr = (iso?: string | null) => {
+    if (!iso) return '—';
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return '—';
+    return d.toLocaleString('pt-BR', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+    });
+};
+
 const CHART_ROW_HEIGHT = 50;
 
 type ChartCategoryTickProps = {
@@ -117,6 +140,32 @@ const ChartCategoryTick = ({ x = 0, y = 0, payload, maxChars = 32 }: ChartCatego
 const chartValorLabel = (value: number) =>
     formatCentavos(value);
 
+type BaixasPeriodoResumo = {
+    total: number;
+    qtd: number;
+    jurosMultaTotal: number;
+    jurosMultaPorConta: Record<string, number>;
+};
+
+const BAIXAS_PERIODO_VAZIO: BaixasPeriodoResumo = {
+    total: 0,
+    qtd: 0,
+    jurosMultaTotal: 0,
+    jurosMultaPorConta: {},
+};
+
+function encargosJurosMultaContaPagar(
+    cp: ContaPagar,
+    filtroDataCampo: FiltroDataCampo,
+    jurosMultaPorConta: Record<string, number>,
+): number {
+    if (filtroDataCampo === 'pagamento') {
+        const doPeriodo = jurosMultaPorConta[cp.id];
+        if (doPeriodo != null) return doPeriodo;
+    }
+    return (cp.valor_juros_centavos || 0) + (cp.valor_multa_centavos || 0);
+}
+
 const parseValorFiltroCentavos = (input: string): number | null => {
     const raw = input.replace(/\D/g, '');
     if (!raw) return null;
@@ -143,6 +192,7 @@ interface EditarContaPagarModalProps {
     onSuccess: () => void;
     updateContaPagar: (id: string, data: Partial<ContaPagar>) => Promise<boolean>;
     criarContaPagar: (data: Partial<ContaPagar>) => Promise<string | null>;
+    planoContas: PlanoContaItem[];
 }
 
 const EditarContaPagarModal: React.FC<EditarContaPagarModalProps> = ({
@@ -151,6 +201,7 @@ const EditarContaPagarModal: React.FC<EditarContaPagarModalProps> = ({
     onSuccess,
     updateContaPagar,
     criarContaPagar,
+    planoContas,
 }) => {
     const [saving, setSaving] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -160,16 +211,50 @@ const EditarContaPagarModal: React.FC<EditarContaPagarModalProps> = ({
 
     const [descricao, setDescricao] = useState(stripSufixoParcelaCp(conta.descricao || ''));
     const [fornecedorNome, setFornecedorNome] = useState(conta.fornecedor_nome || '');
+    const [planoContaId, setPlanoContaId] = useState(conta.plano_conta_id || '');
     const [numeroNF, setNumeroNF] = useState(conta.numero_nota_fiscal || '');
     const [dataVencimento, setDataVencimento] = useState(conta.data_vencimento || '');
     const [dataCompetenciaYm, setDataCompetenciaYm] = useState(
         conta.data_competencia ? conta.data_competencia.slice(0, 7) : ''
     );
-    const [valorInput, setValorInput] = useState((conta.valor_original_centavos / 100).toFixed(2));
+    const [valorInput, setValorInput] = useState(centavosParaInputMoeda(conta.valor_original_centavos));
     const [valorCentavos, setValorCentavos] = useState(conta.valor_original_centavos);
     const [observacoes, setObservacoes] = useState((conta as { observacoes?: string }).observacoes || '');
     const [parcelar, setParcelar] = useState(false);
     const [totalParcelas, setTotalParcelas] = useState(2);
+
+    const planoContasOptions = useMemo(() => {
+        return planoContas
+            .filter((p) => {
+                const t = String(p.tipo || '').toLowerCase();
+                const n = String(p.natureza || '').toLowerCase();
+                return (
+                    Boolean(p.id) &&
+                    (t === 'despesa' || n === 'despesa' || t === 'passivo' || n === 'passivo') &&
+                    p.aceita_lancamento &&
+                    p.ativo !== false
+                );
+            })
+            .sort((a, b) =>
+                String(a.codigo ?? '').localeCompare(String(b.codigo ?? ''), undefined, { numeric: true })
+            )
+            .map((p) => ({
+                id: p.id,
+                primary: String(p.nome ?? '').trim() || 'Sem nome',
+                secondary: p.tipo,
+            }));
+    }, [planoContas]);
+
+    const planoContasSelecionado = useMemo(() => {
+        if (!planoContaId) return null;
+        const found = planoContas.find((p) => p.id === planoContaId);
+        if (!found) return null;
+        return {
+            id: found.id,
+            primary: String(found.nome ?? '').trim() || 'Sem nome',
+            secondary: found.tipo,
+        };
+    }, [planoContaId, planoContas]);
 
     const valorPorParcela = useMemo(() => {
         if (!parcelar || totalParcelas <= 1) return valorCentavos;
@@ -177,10 +262,13 @@ const EditarContaPagarModal: React.FC<EditarContaPagarModalProps> = ({
     }, [parcelar, totalParcelas, valorCentavos]);
 
     const handleValorChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-        const raw = e.target.value.replace(/\D/g, '');
-        const c = parseInt(raw) || 0;
-        setValorCentavos(c);
-        setValorInput((c / 100).toFixed(2));
+        const v = sanitizarTextoMoedaInput(e.target.value);
+        setValorInput(v);
+        setValorCentavos(parseInputMoedaParaCentavos(v));
+    };
+
+    const handleValorBlur = () => {
+        setValorInput((prev) => formatarMoedaInputAoSair(prev));
     };
 
     const handleSubmit = async (e: React.FormEvent) => {
@@ -190,6 +278,7 @@ const EditarContaPagarModal: React.FC<EditarContaPagarModalProps> = ({
         if (!descricao.trim()) { setError('Informe uma descrição.'); return; }
         if (!dataVencimento) { setError('Informe a data de vencimento.'); return; }
         if (valorCentavos <= 0) { setError('Informe um valor maior que zero.'); return; }
+        if (!planoContaId) { setError('Selecione a natureza financeira.'); return; }
 
         const nParcelas = parcelar && podeParcelar
             ? Math.max(2, Math.min(60, totalParcelas))
@@ -235,7 +324,7 @@ const EditarContaPagarModal: React.FC<EditarContaPagarModalProps> = ({
                         tipo_documento: tipoDocumento,
                         descricao: descricaoFinal,
                         numero_nota_fiscal: numeroNF.trim() || undefined,
-                        plano_conta_id: conta.plano_conta_id,
+                        plano_conta_id: planoContaId,
                         centro_custo_id: contaExtra.centro_custo_id,
                         forma_pagamento_id: contaExtra.forma_pagamento_id,
                         conta_bancaria_id: contaExtra.conta_bancaria_id,
@@ -272,6 +361,7 @@ const EditarContaPagarModal: React.FC<EditarContaPagarModalProps> = ({
                 tipo_documento: tipoDocumento,
                 fornecedor_nome: fornecedorNome.trim() || undefined,
                 numero_nota_fiscal: numeroNF.trim() || undefined,
+                plano_conta_id: planoContaId,
                 data_vencimento: dataVencimento,
                 data_competencia: dataCompetenciaYm ? `${dataCompetenciaYm}-01` : undefined,
                 valor_original_centavos: valorCentavos,
@@ -338,6 +428,18 @@ const EditarContaPagarModal: React.FC<EditarContaPagarModalProps> = ({
                             />
                         </div>
 
+                        <div className="space-y-1">
+                            <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wide">Natureza Financeira (Plano de Contas) *</label>
+                            <Combobox
+                                placeholder="Selecione a Natureza Financeira..."
+                                items={planoContasOptions}
+                                selected={planoContasSelecionado}
+                                onSelect={(item) => setPlanoContaId(item ? item.id : '')}
+                                loading={false}
+                                emptyHint="Nenhuma natureza de despesa encontrada."
+                            />
+                        </div>
+
                         <div className="grid grid-cols-2 gap-4">
                             <div className="space-y-1">
                                 <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wide">Valor Original (R$) *</label>
@@ -345,6 +447,7 @@ const EditarContaPagarModal: React.FC<EditarContaPagarModalProps> = ({
                                     type="text"
                                     value={valorInput}
                                     onChange={handleValorChange}
+                                    onBlur={handleValorBlur}
                                     className="w-full h-10 px-3 border border-slate-200 rounded-md text-sm focus:border-slate-800 focus:ring-2 focus:ring-slate-100 outline-none transition font-semibold text-slate-900"
                                 />
                             </div>
@@ -369,15 +472,11 @@ const EditarContaPagarModal: React.FC<EditarContaPagarModalProps> = ({
                                     className="w-full h-10 px-3 border border-slate-200 rounded-md text-sm focus:border-slate-800 focus:ring-2 focus:ring-slate-100 outline-none transition font-semibold text-slate-900"
                                 />
                             </div>
-                            <div className="space-y-1">
-                                <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wide">Competência (Mês/Ano)</label>
-                                <input
-                                    type="month"
-                                    value={dataCompetenciaYm}
-                                    onChange={(e) => setDataCompetenciaYm(e.target.value)}
-                                    className="w-full h-10 px-3 border border-slate-200 rounded-md text-sm focus:border-slate-800 focus:ring-2 focus:ring-slate-100 outline-none transition text-slate-700"
-                                />
-                            </div>
+                            <CompetenciaMesAnoInput
+                                label="Competência (Mês/Ano)"
+                                value={dataCompetenciaYm}
+                                onChange={setDataCompetenciaYm}
+                            />
                         </div>
 
                         <div className="space-y-1">
@@ -499,6 +598,23 @@ function ultimoDiaMes(): string {
     const d = new Date();
     const last = new Date(d.getFullYear(), d.getMonth() + 1, 0);
     return `${last.getFullYear()}-${String(last.getMonth() + 1).padStart(2, '0')}-${String(last.getDate()).padStart(2, '0')}`;
+}
+
+function obterUltimosMeses(qtd: number): { inicio: string; fim: string } {
+    const d = new Date();
+    const fimDate = new Date(d.getFullYear(), d.getMonth() + 1, 0);
+    const fim = `${fimDate.getFullYear()}-${String(fimDate.getMonth() + 1).padStart(2, '0')}-${String(fimDate.getDate()).padStart(2, '0')}`;
+    
+    const inicioDate = new Date(d.getFullYear(), d.getMonth() - qtd + 1, 1);
+    const inicio = `${inicioDate.getFullYear()}-${String(inicioDate.getMonth() + 1).padStart(2, '0')}-01`;
+    return { inicio, fim };
+}
+
+function obterAnoAtual(): { inicio: string; fim: string } {
+    const d = new Date();
+    const inicio = `${d.getFullYear()}-01-01`;
+    const fim = `${d.getFullYear()}-12-31`;
+    return { inicio, fim };
 }
 
 export const ContasPagar: React.FC = () => {
@@ -786,6 +902,7 @@ export const ContasPagar: React.FC = () => {
     const [showBaixarModal, setShowBaixarModal] = useState(false);
     const [showDetalhesModal, setShowDetalhesModal] = useState(false);
     const [showEditarModal, setShowEditarModal] = useState(false);
+    const [showEstornarModal, setShowEstornarModal] = useState(false);
     const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
     const [menuPosition, setMenuPosition] = useState<{ x: number; y: number } | null>(null);
 
@@ -793,8 +910,47 @@ export const ContasPagar: React.FC = () => {
     const [filterMenuColumn, setFilterMenuColumn] = useState<ColumnFilterKey | null>(null);
     const [filterMenuPosition, setFilterMenuPosition] = useState<{ x: number; y: number } | undefined>(undefined);
     const [dropdownSearch, setDropdownSearch] = useState('');
-    const [baixasPeriodo, setBaixasPeriodo] = useState({ total: 0, qtd: 0 });
+    const [baixasPeriodo, setBaixasPeriodo] = useState<BaixasPeriodoResumo>(BAIXAS_PERIODO_VAZIO);
     const [activeTab, setActiveTab] = useState<'lista' | 'graficos'>('lista');
+    const [chartGroupType, setChartGroupType] = useState<'mensal' | 'diario'>('mensal');
+    const [usuarioNomePorId, setUsuarioNomePorId] = useState<Map<string, string>>(new Map());
+
+    useEffect(() => {
+        const ids = Array.from(
+            new Set(
+                contasPagar
+                    .flatMap((cp) => [cp.created_by, cp.updated_by])
+                    .map((id) => String(id || '').trim())
+                    .filter(Boolean),
+            ),
+        );
+        if (ids.length === 0) {
+            setUsuarioNomePorId(new Map());
+            return;
+        }
+        let cancelled = false;
+        (async () => {
+            const map = new Map<string, string>();
+            for (let i = 0; i < ids.length; i += 200) {
+                const chunk = ids.slice(i, i + 200);
+                const { data } = await supabase.from('users').select('id, nome').in('id', chunk);
+                (data ?? []).forEach((u: { id: string; nome?: string }) => {
+                    map.set(u.id, (u.nome || 'Usuário').trim());
+                });
+            }
+            if (!cancelled) setUsuarioNomePorId(map);
+        })();
+        return () => {
+            cancelled = true;
+        };
+    }, [contasPagar]);
+
+    const nomeUsuarioLancamento = useCallback((cp: ContaPagar) => {
+        if (cp.usuario_lancamento_nome) return cp.usuario_lancamento_nome;
+        const autorId = cp.created_by || cp.updated_by;
+        if (autorId) return usuarioNomePorId.get(autorId) || '—';
+        return '—';
+    }, [usuarioNomePorId]);
 
     const valorMinCentavos = useMemo(() => parseValorFiltroCentavos(valorMinInput), [valorMinInput]);
     const valorMaxCentavos = useMemo(() => parseValorFiltroCentavos(valorMaxInput), [valorMaxInput]);
@@ -996,17 +1152,19 @@ export const ContasPagar: React.FC = () => {
 
     const buscaAtiva = searchTerm.trim().length >= 2;
 
-    const carregarBaixasPeriodo = useCallback(async (de: string, ate: string) => {
-        if (!empresaIdsBaixas.length) return { total: 0, qtd: 0 };
+    const carregarBaixasPeriodo = useCallback(async (de: string, ate: string): Promise<BaixasPeriodoResumo> => {
+        if (!empresaIdsBaixas.length) return BAIXAS_PERIODO_VAZIO;
         const pageSize = 1000;
         const maxRows = 20000;
         let total = 0;
         let qtd = 0;
+        let jurosMultaTotal = 0;
+        const jurosMultaPorConta: Record<string, number> = {};
 
         for (let offset = 0; offset < maxRows; offset += pageSize) {
             let q = supabase
                 .from('fin_contas_pagar_baixas')
-                .select('valor_pago_centavos')
+                .select('conta_pagar_id, valor_pago_centavos, valor_juros_centavos, valor_multa_centavos')
                 .eq('estornada', false)
                 .gte('data_baixa', de)
                 .lte('data_baixa', ate);
@@ -1017,16 +1175,24 @@ export const ContasPagar: React.FC = () => {
             const rows = data ?? [];
             if (rows.length === 0) break;
             qtd += rows.length;
-            total += rows.reduce((s, b) => s + (b.valor_pago_centavos || 0), 0);
+            for (const b of rows) {
+                total += b.valor_pago_centavos || 0;
+                const encargos = (b.valor_juros_centavos || 0) + (b.valor_multa_centavos || 0);
+                jurosMultaTotal += encargos;
+                if (b.conta_pagar_id && encargos > 0) {
+                    jurosMultaPorConta[b.conta_pagar_id] =
+                        (jurosMultaPorConta[b.conta_pagar_id] || 0) + encargos;
+                }
+            }
             if (rows.length < pageSize) break;
         }
 
-        return { total, qtd };
+        return { total, qtd, jurosMultaTotal, jurosMultaPorConta };
     }, [empresaIdsBaixas]);
 
     useEffect(() => {
         if (filtroDataCampo !== 'pagamento' || buscaAtiva) {
-            setBaixasPeriodo({ total: 0, qtd: 0 });
+            setBaixasPeriodo(BAIXAS_PERIODO_VAZIO);
             return;
         }
         const today = new Date().toISOString().slice(0, 10);
@@ -1037,7 +1203,7 @@ export const ContasPagar: React.FC = () => {
             .then((res) => { if (!cancelled) setBaixasPeriodo(res); })
             .catch((err) => {
                 console.error('Erro ao carregar baixas do período (pagar):', err);
-                if (!cancelled) setBaixasPeriodo({ total: 0, qtd: 0 });
+                if (!cancelled) setBaixasPeriodo(BAIXAS_PERIODO_VAZIO);
             });
         return () => { cancelled = true; };
     }, [carregarBaixasPeriodo, filtroDataCampo, dataInicio, dataFim, buscaAtiva, dataRevision, dataRevisionEmpresa]);
@@ -1113,13 +1279,48 @@ export const ContasPagar: React.FC = () => {
 
         if (searchTerm) {
             const term = searchTerm.trim();
+            const normalizedTerm = normalizeSearchText(term);
             rows = rows.filter((cp) =>
                 contaPagarCodigoMatch(term, cp.codigo) ||
-                cp.descricao.toLowerCase().includes(term.toLowerCase()) ||
-                (cp.fornecedor_nome || '').toLowerCase().includes(term.toLowerCase()) ||
-                (cp.numero_nota_fiscal || '').toLowerCase().includes(term.toLowerCase()) ||
-                (cp.natureza_financeira || '').toLowerCase().includes(term.toLowerCase())
+                normalizeSearchText(cp.descricao).includes(normalizedTerm) ||
+                normalizeSearchText(cp.fornecedor_nome).includes(normalizedTerm) ||
+                normalizeSearchText(cp.numero_nota_fiscal).includes(normalizedTerm) ||
+                normalizeSearchText(cp.natureza_financeira).includes(normalizedTerm)
             );
+        }
+
+        if (statusFilter && !buscaAtiva) {
+            rows = rows.filter((cp) => {
+                const isVencido = contaPagarEstaVencida(cp);
+                if (statusFilter === 'vencido') {
+                    return isVencido;
+                }
+                if (statusFilter === 'aberto') {
+                    return ['aberto', 'aprovado'].includes(cp.status) && !isVencido;
+                }
+                return cp.status === statusFilter;
+            });
+        }
+
+        if (tipoFilter && !buscaAtiva) {
+            rows = rows.filter((cp) => cp.tipo_documento === tipoFilter);
+        }
+
+        if (naturezaFilter && !buscaAtiva) {
+            rows = rows.filter((cp) => cp.plano_conta_id === naturezaFilter);
+        }
+
+        if ((dataInicio || dataFim) && !buscaAtiva) {
+            rows = rows.filter((cp) => {
+                const dataValor = filtroDataCampo === 'pagamento'
+                    ? (cp.data_pagamento || cp.data_vencimento || '')
+                    : (cp.data_vencimento || '');
+                if (!dataValor) return false;
+                const dateOnly = dataValor.slice(0, 10);
+                if (dataInicio && dateOnly < dataInicio) return false;
+                if (dataFim && dateOnly > dataFim) return false;
+                return true;
+            });
         }
 
         if (valorMinCentavos != null) {
@@ -1135,7 +1336,21 @@ export const ContasPagar: React.FC = () => {
         }
 
         return rows;
-    }, [contasEnriquecidas, searchTerm, valorMinCentavos, valorMaxCentavos, columnFilters, nomeUnidadeConta]);
+    }, [
+        contasEnriquecidas,
+        searchTerm,
+        buscaAtiva,
+        valorMinCentavos,
+        valorMaxCentavos,
+        columnFilters,
+        nomeUnidadeConta,
+        statusFilter,
+        tipoFilter,
+        naturezaFilter,
+        dataInicio,
+        dataFim,
+        filtroDataCampo
+    ]);
 
     const totalItems = filtered.length;
     const totalPages = Math.ceil(totalItems / itemsPerPage);
@@ -1186,6 +1401,10 @@ export const ContasPagar: React.FC = () => {
             qtdBaixasPeriodo: baixasPeriodo.qtd,
             sumTotalCentavos: filtered.reduce((s, c) => s + (c.valor_total_centavos || 0), 0),
             sumAbertoCentavos: emAbertoPeriodo,
+            sumJurosCentavos: filtered.reduce(
+                (s, c) => s + encargosJurosMultaContaPagar(c, filtroDataCampo, baixasPeriodo.jurosMultaPorConta),
+                0,
+            ),
         };
     }, [filtered, filtroDataCampo, buscaAtiva, baixasPeriodo]);
 
@@ -1215,6 +1434,23 @@ export const ContasPagar: React.FC = () => {
         });
     }, [filtered, mostrarColunaUnidade, filialEmpresaPorId, rotuloEmpresaConta, rotuloFilialConta]);
 
+    const activePreset = useMemo(() => {
+        const todayStr = new Date().toISOString().slice(0, 10);
+        const range3 = obterUltimosMeses(3);
+        const range6 = obterUltimosMeses(6);
+        const rangeAno = obterAnoAtual();
+        const esteMesInicio = primeiroDiaMes();
+        const esteMesFim = ultimoDiaMes();
+
+        if (dataInicio === todayStr && dataFim === todayStr) return 'hoje';
+        if (dataInicio === esteMesInicio && dataFim === esteMesFim) return 'este_mes';
+        if (dataInicio === range3.inicio && dataFim === range3.fim) return '3_meses';
+        if (dataInicio === range6.inicio && dataFim === range6.fim) return '6_meses';
+        if (dataInicio === rangeAno.inicio && dataFim === rangeAno.fim) return 'este_ano';
+        if (dataInicio === '' && dataFim === '') return 'todo_periodo';
+        return null;
+    }, [dataInicio, dataFim]);
+
     const STATUS_CHART_COLORS: Record<string, string> = {
         Aberto: '#f59e0b', Vencido: '#ef4444', Pago: '#10b981',
         Parcial: '#3b82f6', Cancelado: '#94a3b8', Aprovado: '#8b5cf6',
@@ -1232,23 +1468,54 @@ export const ContasPagar: React.FC = () => {
             statusMap[label] = s;
         });
 
-        const mesMap: Record<string, { mes: string; label: string; aberto: number; pago: number; vencido: number }> = {};
+        const temporalMap: Record<string, { key: string; label: string; aberto: number; pago: number; vencido: number; jurosMulta: number }> = {};
         filtered.forEach(cp => {
-            const mesKey = (cp.data_vencimento || '').slice(0, 7);
-            if (!mesKey) return;
-            const entry = mesMap[mesKey] || {
-                mes: mesKey,
-                label: new Date(mesKey + '-15').toLocaleDateString('pt-BR', { month: 'short', year: '2-digit' }),
-                aberto: 0, pago: 0, vencido: 0,
+            const dateStr = filtroDataCampo === 'pagamento'
+                ? (cp.data_pagamento || cp.data_vencimento || '')
+                : (cp.data_vencimento || '');
+            if (!dateStr) return;
+
+            let key = '';
+            let label = '';
+
+            if (chartGroupType === 'mensal') {
+                key = dateStr.slice(0, 7); // YYYY-MM
+                const parts = key.split('-');
+                if (parts.length === 2) {
+                    const months = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
+                    const mIdx = parseInt(parts[1], 10) - 1;
+                    label = `${months[mIdx] || parts[1]}/${parts[0].slice(2)}`;
+                } else {
+                    label = key;
+                }
+            } else {
+                key = dateStr; // YYYY-MM-DD
+                const parts = key.split('-');
+                if (parts.length === 3) {
+                    label = `${parts[2]}/${parts[1]}`; // DD/MM
+                } else {
+                    label = key;
+                }
+            }
+
+            const encargos = encargosJurosMultaContaPagar(cp, filtroDataCampo, baixasPeriodo.jurosMultaPorConta);
+
+            const entry = temporalMap[key] || {
+                key,
+                label,
+                aberto: 0, pago: 0, vencido: 0, jurosMulta: 0,
             };
+
             if (['pago', 'pago_parcial'].includes(cp.status)) {
-                entry.pago += cp.valor_pago_centavos || 0;
+                const pagoTotal = cp.valor_pago_centavos || 0;
+                entry.pago += Math.max(0, pagoTotal - encargos);
+                entry.jurosMulta += encargos;
             } else if (contaPagarEstaVencida(cp)) {
                 entry.vencido += cp.valor_aberto_centavos || 0;
             } else {
                 entry.aberto += cp.valor_aberto_centavos || 0;
             }
-            mesMap[mesKey] = entry;
+            temporalMap[key] = entry;
         });
 
         const tipoMap: Record<string, number> = {};
@@ -1289,9 +1556,14 @@ export const ContasPagar: React.FC = () => {
             filialMap[nome] = f;
         });
 
-        const porMesComTotal = Object.values(mesMap)
-            .sort((a, b) => a.mes.localeCompare(b.mes))
-            .map(m => ({ ...m, total: m.pago + m.aberto + m.vencido }));
+        const porMesComTotal = Object.values(temporalMap)
+            .sort((a, b) => a.key.localeCompare(b.key))
+            .map(m => ({ ...m, total: m.pago + m.jurosMulta + m.aberto + m.vencido }));
+
+        const totalJurosMulta = filtered.reduce(
+            (s, cp) => s + encargosJurosMultaContaPagar(cp, filtroDataCampo, baixasPeriodo.jurosMultaPorConta),
+            0,
+        );
 
         return {
             porStatus: Object.values(statusMap),
@@ -1300,8 +1572,9 @@ export const ContasPagar: React.FC = () => {
             porNatureza: Object.entries(naturezaMap).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([name, valor]) => ({ name, valor })),
             porFornecedor: Object.entries(fornecedorMap).sort((a, b) => b[1] - a[1]).slice(0, 8).map(([name, valor]) => ({ name, valor })),
             porFilial: Object.values(filialMap).sort((a, b) => b.total - a.total),
+            totalJurosMulta,
         };
-    }, [filtered, filialNomePorId]);
+    }, [filtered, filialNomePorId, chartGroupType, filtroDataCampo, baixasPeriodo.jurosMultaPorConta]);
 
     // Only show full loading screen if we have no data AND multiple things are loading,
     // but if we are just opening the modal (which triggers background loads), keep the UI.
@@ -1368,6 +1641,8 @@ export const ContasPagar: React.FC = () => {
                     sublabel={`${totais.qtdAVencer} título${totais.qtdAVencer === 1 ? '' : 's'} ainda no prazo ${getPeriodoLabel()}${sufixoConsolidado}`}
                     icon={<TrendingDown className="h-5 w-5" />}
                     color="amber"
+                    onClick={() => setStatusFilter(statusFilter === 'aberto' ? '' : 'aberto')}
+                    active={statusFilter === 'aberto'}
                 />
                 <StatCard
                     label="Vencido"
@@ -1375,6 +1650,8 @@ export const ContasPagar: React.FC = () => {
                     sublabel={`${totais.qtdVencidos} título${totais.qtdVencidos === 1 ? '' : 's'} vencido${totais.qtdVencidos === 1 ? '' : 's'} ${getPeriodoLabel()}${sufixoConsolidado}`}
                     icon={<AlertTriangle className="h-5 w-5" />}
                     color="red"
+                    onClick={() => setStatusFilter(statusFilter === 'vencido' ? '' : 'vencido')}
+                    active={statusFilter === 'vencido'}
                 />
                 <StatCard
                     label={filtroDataCampo === 'pagamento' ? 'Pago (período)' : 'Pago (venc. no período)'}
@@ -1386,6 +1663,8 @@ export const ContasPagar: React.FC = () => {
                     }
                     icon={<CheckCircle className="h-5 w-5" />}
                     color="green"
+                    onClick={() => setStatusFilter(statusFilter === 'pago' ? '' : 'pago')}
+                    active={statusFilter === 'pago'}
                 />
             </div>
 
@@ -1415,70 +1694,12 @@ export const ContasPagar: React.FC = () => {
                 </button>
             </div>
 
-            {activeTab === 'lista' && (<>
-
-            {mostrarColunaUnidade && totaisPorUnidade.length > 0 && (
-                <Card className="overflow-hidden border border-indigo-100 dark:border-indigo-900/40">
-                    <div className="px-4 py-3 border-b border-indigo-50 dark:border-indigo-900/30 bg-indigo-50/60 dark:bg-indigo-950/30 flex items-center gap-2">
-                        <Layers className="h-4 w-4 text-indigo-600" />
-                        <h3 className="text-sm font-bold text-indigo-900 dark:text-indigo-200">
-                            Total por unidade {getPeriodoLabel()}
-                        </h3>
-                    </div>
-                    <div className="overflow-x-auto">
-                        <table className="w-full text-sm">
-                            <thead>
-                                <tr className="text-left text-xs uppercase tracking-wide text-slate-500 border-b border-slate-100 dark:border-slate-800">
-                                    {visaoTodasEmpresasGrupo && empresaIdsParaFiltro.length > 1 && (
-                                        <th className="px-4 py-2.5 font-semibold">Empresa</th>
-                                    )}
-                                    <th className="px-4 py-2.5 font-semibold">Unidade</th>
-                                    <th className="px-4 py-2.5 font-semibold text-right">Lançamentos</th>
-                                    <th className="px-4 py-2.5 font-semibold text-right">Total original</th>
-                                    <th className="px-4 py-2.5 font-semibold text-right">Em aberto</th>
-                                    <th className="px-4 py-2.5 font-semibold text-right">Pago</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {totaisPorUnidade.map((row) => (
-                                    <tr
-                                        key={`${row.empresa}|${row.unidade}`}
-                                        className="border-b border-slate-50 dark:border-slate-800/60 last:border-0 hover:bg-slate-50/80 dark:hover:bg-slate-800/40"
-                                    >
-                                        {visaoTodasEmpresasGrupo && empresaIdsParaFiltro.length > 1 && (
-                                            <td className="px-4 py-2.5 font-medium text-slate-700 dark:text-slate-300">{row.empresa}</td>
-                                        )}
-                                        <td className="px-4 py-2.5 font-medium text-slate-800 dark:text-slate-200">{row.unidade}</td>
-                                        <td className="px-4 py-2.5 text-right tabular-nums text-slate-600 dark:text-slate-400">{row.qtd}</td>
-                                        <td className="px-4 py-2.5 text-right tabular-nums font-semibold text-slate-800 dark:text-slate-200">{formatCentavos(row.total)}</td>
-                                        <td className="px-4 py-2.5 text-right tabular-nums text-amber-700 dark:text-amber-400">{formatCentavos(row.aberto)}</td>
-                                        <td className="px-4 py-2.5 text-right tabular-nums text-emerald-700 dark:text-emerald-400">{formatCentavos(row.pago)}</td>
-                                    </tr>
-                                ))}
-                                <tr className="bg-slate-50 dark:bg-slate-800/50 font-bold">
-                                    {visaoTodasEmpresasGrupo && empresaIdsParaFiltro.length > 1 && (
-                                        <td className="px-4 py-2.5 text-slate-900 dark:text-slate-100">—</td>
-                                    )}
-                                    <td className="px-4 py-2.5 text-slate-900 dark:text-slate-100">Total geral</td>
-                                    <td className="px-4 py-2.5 text-right tabular-nums">{filtered.length}</td>
-                                    <td className="px-4 py-2.5 text-right tabular-nums">{formatCentavos(totais.sumTotalCentavos)}</td>
-                                    <td className="px-4 py-2.5 text-right tabular-nums text-amber-700">{formatCentavos(totais.sumAbertoCentavos)}</td>
-                                    <td className="px-4 py-2.5 text-right tabular-nums text-emerald-700">
-                                        {formatCentavos(filtered.reduce((s, c) => s + (c.valor_pago_centavos || 0), 0))}
-                                    </td>
-                                </tr>
-                            </tbody>
-                        </table>
-                    </div>
-                </Card>
-            )}
-
-            {/* Filters */}
+            {/* Filters — compartilhados entre as abas Lista e Gráficos */}
             <div className="flex flex-col gap-4 bg-white dark:bg-slate-900 p-4 rounded-xl shadow-sm border border-gray-100 dark:border-slate-800">
                 <div className="flex flex-col md:flex-row gap-3">
                     <div className="relative flex-1">
                         <Search className="absolute left-3 top-2.5 h-4 w-4 text-gray-400" />
-                        <Input placeholder="Buscar por código, descrição, fornecedor, natureza ou NF..." className="pl-9" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
+                        <Input placeholder="Buscar por código, descrição, fornecedor, cliente/favorecido, natureza ou NF..." className="pl-9" value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} />
                     </div>
                     <div className="w-full md:w-44">
                         <Select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
@@ -1519,7 +1740,7 @@ export const ContasPagar: React.FC = () => {
 
                 {buscaAtiva && (
                     <p className="text-xs text-sky-700 bg-sky-50 border border-sky-100 rounded-lg px-3 py-2">
-                        Busca ativa: ignorando filtros de data, status e tipo. Digite ao menos 2 caracteres.
+                        Busca ativa pelo termo &quot;{searchTerm}&quot;. Os filtros de data, status, tipo e natureza ainda estão sendo aplicados aos resultados.
                     </p>
                 )}
 
@@ -1596,35 +1817,72 @@ export const ContasPagar: React.FC = () => {
                             </div>
                             <Calendar className="h-4 w-4 text-gray-400 dark:text-slate-500 mr-2 shrink-0 pointer-events-none" />
                         </div>
-                        <div className="flex gap-2 animate-in fade-in duration-200">
+                        <div className="flex flex-wrap gap-1.5 animate-in fade-in duration-200">
                             <Button
-                                variant="outline"
+                                variant={activePreset === 'hoje' ? 'primary' : 'outline'}
                                 onClick={() => {
                                     const todayStr = new Date().toISOString().slice(0, 10);
                                     setDataInicio(todayStr);
                                     setDataFim(todayStr);
                                 }}
-                                className="h-10 px-3 text-xs"
+                                className="h-10 px-2.5 text-xs"
                             >
                                 Hoje
                             </Button>
                             <Button
-                                variant="outline"
+                                variant={activePreset === 'este_mes' ? 'primary' : 'outline'}
                                 onClick={() => {
                                     setDataInicio(primeiroDiaMes());
                                     setDataFim(ultimoDiaMes());
                                 }}
-                                className="h-10 px-3 text-xs"
+                                className="h-10 px-2.5 text-xs"
                             >
                                 Este Mês
                             </Button>
                             <Button
-                                variant="outline"
+                                variant={activePreset === '3_meses' ? 'primary' : 'outline'}
+                                onClick={() => {
+                                    const range = obterUltimosMeses(3);
+                                    setDataInicio(range.inicio);
+                                    setDataFim(range.fim);
+                                }}
+                                className="h-10 px-2.5 text-xs"
+                            >
+                                3 Meses
+                            </Button>
+                            <Button
+                                variant={activePreset === '6_meses' ? 'primary' : 'outline'}
+                                onClick={() => {
+                                    const range = obterUltimosMeses(6);
+                                    setDataInicio(range.inicio);
+                                    setDataFim(range.fim);
+                                }}
+                                className="h-10 px-2.5 text-xs"
+                            >
+                                6 Meses
+                            </Button>
+                            <Button
+                                variant={activePreset === 'este_ano' ? 'primary' : 'outline'}
+                                onClick={() => {
+                                    const range = obterAnoAtual();
+                                    setDataInicio(range.inicio);
+                                    setDataFim(range.fim);
+                                }}
+                                className="h-10 px-2.5 text-xs"
+                            >
+                                Este Ano
+                            </Button>
+                            <Button
+                                variant={activePreset === 'todo_periodo' ? 'primary' : 'outline'}
                                 onClick={() => { setDataInicio(''); setDataFim(''); }}
                                 disabled={!dataInicio && !dataFim}
-                                className="h-10 px-3 text-xs"
+                                className={`h-10 px-2.5 text-xs ${
+                                    activePreset === 'todo_periodo'
+                                        ? ''
+                                        : 'text-red-650 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/20'
+                                }`}
                             >
-                                Limpar
+                                Todo Período
                             </Button>
                         </div>
                     </div>
@@ -1725,6 +1983,64 @@ export const ContasPagar: React.FC = () => {
                 </div>
             )}
 
+            {activeTab === 'lista' && (<>
+
+            {mostrarColunaUnidade && totaisPorUnidade.length > 0 && (
+                <Card className="overflow-hidden border border-indigo-100 dark:border-indigo-900/40">
+                    <div className="px-4 py-3 border-b border-indigo-50 dark:border-indigo-900/30 bg-indigo-50/60 dark:bg-indigo-950/30 flex items-center gap-2">
+                        <Layers className="h-4 w-4 text-indigo-600" />
+                        <h3 className="text-sm font-bold text-indigo-900 dark:text-indigo-200">
+                            Total por unidade {getPeriodoLabel()}
+                        </h3>
+                    </div>
+                    <div className="overflow-x-auto">
+                        <table className="w-full text-sm">
+                            <thead>
+                                <tr className="text-left text-xs uppercase tracking-wide text-slate-500 border-b border-slate-100 dark:border-slate-800">
+                                    {visaoTodasEmpresasGrupo && empresaIdsParaFiltro.length > 1 && (
+                                        <th className="px-4 py-2.5 font-semibold">Empresa</th>
+                                    )}
+                                    <th className="px-4 py-2.5 font-semibold">Unidade</th>
+                                    <th className="px-4 py-2.5 font-semibold text-right">Lançamentos</th>
+                                    <th className="px-4 py-2.5 font-semibold text-right">Total original</th>
+                                    <th className="px-4 py-2.5 font-semibold text-right">Em aberto</th>
+                                    <th className="px-4 py-2.5 font-semibold text-right">Pago</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {totaisPorUnidade.map((row) => (
+                                    <tr
+                                        key={`${row.empresa}|${row.unidade}`}
+                                        className="border-b border-slate-50 dark:border-slate-800/60 last:border-0 hover:bg-slate-50/80 dark:hover:bg-slate-800/40"
+                                    >
+                                        {visaoTodasEmpresasGrupo && empresaIdsParaFiltro.length > 1 && (
+                                            <td className="px-4 py-2.5 font-medium text-slate-700 dark:text-slate-300">{row.empresa}</td>
+                                        )}
+                                        <td className="px-4 py-2.5 font-medium text-slate-800 dark:text-slate-200">{row.unidade}</td>
+                                        <td className="px-4 py-2.5 text-right tabular-nums text-slate-600 dark:text-slate-400">{row.qtd}</td>
+                                        <td className="px-4 py-2.5 text-right tabular-nums font-semibold text-slate-800 dark:text-slate-200">{formatCentavos(row.total)}</td>
+                                        <td className="px-4 py-2.5 text-right tabular-nums text-amber-700 dark:text-amber-400">{formatCentavos(row.aberto)}</td>
+                                        <td className="px-4 py-2.5 text-right tabular-nums text-emerald-700 dark:text-emerald-400">{formatCentavos(row.pago)}</td>
+                                    </tr>
+                                ))}
+                                <tr className="bg-slate-50 dark:bg-slate-800/50 font-bold">
+                                    {visaoTodasEmpresasGrupo && empresaIdsParaFiltro.length > 1 && (
+                                        <td className="px-4 py-2.5 text-slate-900 dark:text-slate-100">—</td>
+                                    )}
+                                    <td className="px-4 py-2.5 text-slate-900 dark:text-slate-100">Total geral</td>
+                                    <td className="px-4 py-2.5 text-right tabular-nums">{filtered.length}</td>
+                                    <td className="px-4 py-2.5 text-right tabular-nums">{formatCentavos(totais.sumTotalCentavos)}</td>
+                                    <td className="px-4 py-2.5 text-right tabular-nums text-amber-700">{formatCentavos(totais.sumAbertoCentavos)}</td>
+                                    <td className="px-4 py-2.5 text-right tabular-nums text-emerald-700">
+                                        {formatCentavos(filtered.reduce((s, c) => s + (c.valor_pago_centavos || 0), 0))}
+                                    </td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </Card>
+            )}
+
             {/* Table */}
             {filtered.length > 0 ? (
                 <div className="list-table-shell">
@@ -1738,14 +2054,16 @@ export const ContasPagar: React.FC = () => {
                                         <ThComFiltro label="Unidade" columnKey="unidade" />
                                     )}
                                     <th>Descrição</th>
-                                    <ThComFiltro label="Tipo" columnKey="tipo" />
                                     <ThComFiltro label="Natureza" columnKey="natureza" />
                                     <ThComFiltro label="Vencimento" columnKey="vencimento" />
                                     <ThComFiltro label="Pagamento" columnKey="pagamento" />
                                     <ThComFiltro label="Valor" columnKey="valor" align="right" />
+                                    <th className="text-right">Juros/Multa</th>
                                     <th className="text-right">Aberto</th>
                                     <ThComFiltro label="Status" columnKey="status" align="center" />
                                     <ThComFiltro label="NF" columnKey="nf" />
+                                    <th>Usuário de lançamento</th>
+                                    <th>Data de lançamento</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -1768,8 +2086,8 @@ export const ContasPagar: React.FC = () => {
                                                         : 'hover:bg-gray-50 dark:hover:bg-slate-800/60'
                                         }`}
                                     >
-                                        <td>
-                                            <span className="text-[10px] font-mono font-semibold text-red-800 bg-red-100 rounded px-1.5 py-0.5">
+                                        <td className="py-3 px-4">
+                                            <span className="text-xs font-mono font-bold text-red-700 dark:text-red-300 bg-red-50 dark:bg-red-950/40 border border-red-200/60 dark:border-red-900/60 rounded px-2 py-0.5 whitespace-nowrap">
                                                 {cp.codigo}
                                             </span>
                                         </td>
@@ -1787,11 +2105,6 @@ export const ContasPagar: React.FC = () => {
                                             </td>
                                         )}
                                         <td className="py-3 px-4 text-gray-900 dark:text-slate-100 max-w-[250px] truncate">{cp.descricao}</td>
-                                        <td className="py-3 px-4">
-                                            <span className="inline-flex items-center rounded bg-gray-100 px-2 py-0.5 text-xs text-gray-700 capitalize">
-                                                {cp.tipo_documento.replace(/_/g, ' ')}
-                                            </span>
-                                        </td>
                                         <td className="py-3 px-4 text-xs text-gray-700 max-w-[200px] truncate" title={cp.natureza_financeira || ''}>
                                             {cp.natureza_financeira || '—'}
                                         </td>
@@ -1806,6 +2119,18 @@ export const ContasPagar: React.FC = () => {
                                             )}
                                         </td>
                                         <td className="py-3 px-4 text-right tabular-nums font-medium">{formatCentavos(cp.valor_total_centavos)}</td>
+                                        <td className="py-3 px-4 text-right tabular-nums text-rose-700">
+                                            {(() => {
+                                                const encargos = encargosJurosMultaContaPagar(
+                                                    cp,
+                                                    filtroDataCampo,
+                                                    baixasPeriodo.jurosMultaPorConta,
+                                                );
+                                                return encargos > 0
+                                                    ? formatCentavos(encargos)
+                                                    : <span className="text-gray-400">—</span>;
+                                            })()}
+                                        </td>
                                         <td className="py-3 px-4 text-right">
                                             <MoneyDisplay centavos={-cp.valor_aberto_centavos} size="sm" />
                                         </td>
@@ -1813,6 +2138,15 @@ export const ContasPagar: React.FC = () => {
                                             <StatusFinanceiroBadge status={statusExibicao} />
                                         </td>
                                         <td className="py-3 px-4 text-xs text-gray-500">{cp.numero_nota_fiscal || '-'}</td>
+                                        <td
+                                            className="py-3 px-4 text-xs text-gray-700 max-w-[160px] truncate"
+                                            title={nomeUsuarioLancamento(cp)}
+                                        >
+                                            {nomeUsuarioLancamento(cp)}
+                                        </td>
+                                        <td className="py-3 px-4 text-xs text-gray-600 whitespace-nowrap">
+                                            {formatDataHoraBr(cp.created_at)}
+                                        </td>
                                     </tr>
                                     );
                                 })}
@@ -1825,10 +2159,13 @@ export const ContasPagar: React.FC = () => {
                                     <td className="py-3 px-4 text-right tabular-nums font-bold text-gray-900 dark:text-slate-100">
                                         {formatCentavos(totais.sumTotalCentavos)}
                                     </td>
+                                    <td className="py-3 px-4 text-right tabular-nums font-bold text-rose-700">
+                                        {formatCentavos(totais.sumJurosCentavos)}
+                                    </td>
                                     <td className="py-3 px-4 text-right font-bold">
                                         <MoneyDisplay centavos={-totais.sumAbertoCentavos} size="sm" className="font-bold" />
                                     </td>
-                                    <td colSpan={2} className="py-3 px-4"></td>
+                                    <td colSpan={4} className="py-3 px-4"></td>
                                 </tr>
                             </tfoot>
                         </table>
@@ -1932,6 +2269,21 @@ export const ContasPagar: React.FC = () => {
             {/* ═══ ABA GRÁFICOS ═══ */}
             {activeTab === 'graficos' && (
                 <div className="space-y-5">
+                    {dadosGraficos.totalJurosMulta > 0 && (
+                        <Card className="p-4 border-rose-200 bg-rose-50/60">
+                            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                                <div>
+                                    <h3 className="text-sm font-bold text-rose-900">Juros e multas pagos</h3>
+                                    <p className="text-[11px] text-rose-700/80 mt-0.5">
+                                        Despesas com encargos por atraso no período filtrado
+                                    </p>
+                                </div>
+                                <span className="text-xl font-bold tabular-nums text-rose-700">
+                                    {formatCentavos(dadosGraficos.totalJurosMulta)}
+                                </span>
+                            </div>
+                        </Card>
+                    )}
                     {/* Linha 1: Donut status + Barras por mês */}
                     <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
                         {/* Donut - distribuição por status */}
@@ -1982,8 +2334,40 @@ export const ContasPagar: React.FC = () => {
 
                         {/* Evolução mensal — estilo DRE */}
                         <Card className="p-5 lg:col-span-2">
-                            <h3 className="text-sm font-bold text-gray-900">Histórico Mensal de Contas a Pagar</h3>
-                            <p className="text-[11px] text-gray-400 mt-0.5 mb-4">Pago, aberto e vencido por mês de vencimento — linha de total</p>
+                            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-4">
+                                <div>
+                                    <h3 className="text-sm font-bold text-gray-900">
+                                        {chartGroupType === 'mensal' ? 'Histórico Mensal' : 'Histórico Diário'} de Contas a Pagar
+                                    </h3>
+                                    <p className="text-[11px] text-gray-400 mt-0.5">
+                                        Pago, aberto, vencido e juros/multa por {chartGroupType === 'mensal' ? 'mês' : 'dia'} de {filtroDataCampo === 'pagamento' ? 'pagamento' : 'vencimento'} — linha de total
+                                    </p>
+                                </div>
+                                <div className="inline-flex rounded-lg border border-gray-200 bg-gray-50 p-0.5 shrink-0">
+                                    <button
+                                        type="button"
+                                        onClick={() => setChartGroupType('mensal')}
+                                        className={`px-3 py-1 text-xs font-semibold rounded-md transition-all ${
+                                            chartGroupType === 'mensal'
+                                                ? 'bg-white text-slate-900 shadow-sm'
+                                                : 'text-slate-500 hover:text-slate-800'
+                                        }`}
+                                    >
+                                        Mensal
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => setChartGroupType('diario')}
+                                        className={`px-3 py-1 text-xs font-semibold rounded-md transition-all ${
+                                            chartGroupType === 'diario'
+                                                ? 'bg-white text-slate-900 shadow-sm'
+                                                : 'text-slate-500 hover:text-slate-800'
+                                        }`}
+                                    >
+                                        Diário
+                                    </button>
+                                </div>
+                            </div>
                             {dadosGraficos.porMes.length > 0 ? (
                                 <div className="w-full bg-slate-50/60 rounded-xl border border-gray-100 p-3">
                                     <ResponsiveContainer width="100%" height={280}>
@@ -2017,6 +2401,7 @@ export const ContasPagar: React.FC = () => {
                                             />
                                             <Legend wrapperStyle={{ fontSize: 12, paddingTop: 12 }} iconType="square" iconSize={10} />
                                             <Bar dataKey="pago" name="Pago" fill="#10b981" stackId="a" radius={[0, 0, 0, 0]} />
+                                            <Bar dataKey="jurosMulta" name="Juros/Multa" fill="#e11d48" stackId="a" radius={[0, 0, 0, 0]} />
                                             <Bar dataKey="aberto" name="Aberto" fill="#f59e0b" stackId="a" radius={[0, 0, 0, 0]} />
                                             <Bar dataKey="vencido" name="Vencido" fill="#ef4444" stackId="a" radius={[4, 4, 0, 0]} />
                                             <Line
@@ -2060,7 +2445,7 @@ export const ContasPagar: React.FC = () => {
                                         <YAxis
                                             type="category"
                                             dataKey="name"
-                                            tick={(props) => <ChartCategoryTick {...props} maxChars={18} />}
+                                            tick={(props: any) => <ChartCategoryTick {...props} maxChars={18} />}
                                             axisLine={false}
                                             tickLine={false}
                                             width={130}
@@ -2107,7 +2492,7 @@ export const ContasPagar: React.FC = () => {
                                         <YAxis
                                             type="category"
                                             dataKey="name"
-                                            tick={(props) => <ChartCategoryTick {...props} maxChars={28} />}
+                                            tick={(props: any) => <ChartCategoryTick {...props} maxChars={28} />}
                                             axisLine={false}
                                             tickLine={false}
                                             width={200}
@@ -2156,7 +2541,7 @@ export const ContasPagar: React.FC = () => {
                                     <YAxis
                                         type="category"
                                         dataKey="name"
-                                        tick={(props) => <ChartCategoryTick {...props} maxChars={36} />}
+                                        tick={(props: any) => <ChartCategoryTick {...props} maxChars={36} />}
                                         axisLine={false}
                                         tickLine={false}
                                         width={280}
@@ -2289,6 +2674,18 @@ export const ContasPagar: React.FC = () => {
                     onSuccess={() => { recarregar(); setShowEditarModal(false); setSelectedConta(null); }}
                     updateContaPagar={updateContaPagar}
                     criarContaPagar={criarContaPagar}
+                    planoContas={planoContas}
+                />
+            )}
+
+            {showEstornarModal && selectedConta && (
+                <EstornarContaPagarModal
+                    conta={selectedConta}
+                    onClose={() => { setShowEstornarModal(false); setSelectedConta(null); }}
+                    onSuccess={() => { recarregar(); setShowEstornarModal(false); setSelectedConta(null); }}
+                    estornarContaPagar={estornarContaPagar}
+                    updateContaPagar={updateContaPagar}
+                    planoContas={planoContas}
                 />
             )}
 
@@ -2380,18 +2777,8 @@ export const ContasPagar: React.FC = () => {
                         {/* Estornar Baixa - Only for Paid or Partially Paid */}
                         {['pago', 'pago_parcial'].includes(selectedConta.status) && (
                             <DropdownMenuItem
-                                onClick={async () => {
-                                    if (window.confirm('Tem certeza que deseja estornar o pagamento desta conta? O valor será devolvido ao saldo da conta bancária/caixa.')) {
-                                        const motivo = window.prompt('Qual o motivo do estorno?');
-                                        if (motivo) {
-                                            const success = await estornarContaPagar(selectedConta.id, motivo);
-                                            if (success) {
-                                                alert('Estorno realizado com sucesso!');
-                                            } else {
-                                                alert('Erro ao realizar estorno.');
-                                            }
-                                        }
-                                    }
+                                onClick={() => {
+                                    setShowEstornarModal(true);
                                     setActiveMenuId(null);
                                 }}
                             >

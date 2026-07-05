@@ -224,11 +224,37 @@ export function timestampFromDiaEHora(dataISO: string, horaHHmm: string): string
   return d.toISOString();
 }
 
+/** HH:mm normalizado (evita diferença 8:00 vs 08:00 ou locale). */
+export function normalizarHoraHHmm(hora?: string): string {
+  if (!hora) return '';
+  const m = /^(\d{1,2}):(\d{2})/.exec(hora.trim());
+  if (!m) return '';
+  return `${String(Number(m[1])).padStart(2, '0')}:${m[2]}`;
+}
+
+/** Mesmo instante até o minuto (fuso local). */
+export function batidasMesmoHorarioMinuto(isoA: string, isoB: string): boolean {
+  const da = new Date(isoA);
+  const db = new Date(isoB);
+  if (Number.isNaN(da.getTime()) || Number.isNaN(db.getTime())) return false;
+  return (
+    da.getFullYear() === db.getFullYear() &&
+    da.getMonth() === db.getMonth() &&
+    da.getDate() === db.getDate() &&
+    da.getHours() === db.getHours() &&
+    da.getMinutes() === db.getMinutes()
+  );
+}
+
 export function horaFromTimestamp(iso?: string): string {
   if (!iso) return '';
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '';
-  return d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', hour12: false });
+  return normalizarHoraHHmm(
+    new Date(iso).toLocaleTimeString('pt-BR', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }),
+  );
 }
 
 export function formatarDuracaoPonto(minutos: number) {

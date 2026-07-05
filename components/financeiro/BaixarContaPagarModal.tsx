@@ -1,6 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { X, CheckCircle, AlertCircle, RefreshCw, AlertTriangle, Printer, CheckCircle2 } from 'lucide-react';
-import { Button, Input, Select, Label } from '../../components/ui/Components';
 import { useFinanceiro, ContaPagar, formatCentavos } from '../../lib/FinanceiroStore';
 import { useAuth } from '../../lib/AuthContext';
 import { dataHojeIsoLocal } from '../../lib/contratoDatas';
@@ -35,18 +34,48 @@ export const BaixarContaPagarModal: React.FC<BaixarContaPagarModalProps> = ({ co
     const [descontoInput, setDescontoInput] = useState('0.00');
     const [jurosInput, setJurosInput] = useState('0.00');
     const [multaInput, setMultaInput] = useState('0.00');
+    const [valorEditadoManualmente, setValorEditadoManualmente] = useState(false);
 
     const selectedForma = formasPagamento.find((fp) => fp.id === formData.forma_pagamento_id);
     const selectedConta = contasBancarias.find((c) => c.id === formData.conta_bancaria_id);
+    const diasAtraso = useMemo(() => {
+        if (!conta.data_vencimento || !formData.data_pagamento) return 0;
+        const venc = new Date(`${conta.data_vencimento.slice(0, 10)}T12:00:00`);
+        const pag = new Date(`${formData.data_pagamento.slice(0, 10)}T12:00:00`);
+        if (Number.isNaN(venc.getTime()) || Number.isNaN(pag.getTime())) return 0;
+        const diff = Math.floor((pag.getTime() - venc.getTime()) / 86400000);
+        return diff > 0 ? diff : 0;
+    }, [conta.data_vencimento, formData.data_pagamento]);
 
     useEffect(() => {
         loadContasBancarias();
         loadFormasPagamento();
     }, [loadContasBancarias, loadFormasPagamento]);
 
+    // Total devido = valor em aberto + juros + multa - desconto. É o valor que precisa ser
+    // pago para o título ficar 100% quitado (sem deixar juros/multa lançados sem cobrir).
+    const totalDevidoCentavos = Math.max(
+        0,
+        conta.valor_aberto_centavos
+            + formData.valor_juros_centavos
+            + formData.valor_multa_centavos
+            - formData.valor_desconto_centavos,
+    );
+    const faltaParaQuitarCentavos = Math.max(0, totalDevidoCentavos - formData.valor_pago_centavos);
+
+    // Valor a Pagar = total devido. Recalcula automaticamente enquanto o usuário não editar
+    // "Valor a Pagar" na mão (aí respeitamos o valor digitado, útil para pagamento parcial
+    // proposital — mas avisamos quando isso deixa juros/multa sem cobrir, ver aviso abaixo).
+    useEffect(() => {
+        if (valorEditadoManualmente) return;
+        setValorInput((totalDevidoCentavos / 100).toFixed(2));
+        setFormData(prev => (prev.valor_pago_centavos === totalDevidoCentavos ? prev : { ...prev, valor_pago_centavos: totalDevidoCentavos }));
+    }, [totalDevidoCentavos, valorEditadoManualmente]);
+
     const handleValorChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         const rawValue = e.target.value.replace(/\D/g, '');
         const centavos = parseInt(rawValue) || 0;
+        setValorEditadoManualmente(true);
         setValorInput((centavos / 100).toFixed(2));
         setFormData(prev => ({ ...prev, valor_pago_centavos: centavos }));
     };
@@ -157,7 +186,7 @@ export const BaixarContaPagarModal: React.FC<BaixarContaPagarModalProps> = ({ co
     };
 
     if (success) {
-        const quitacaoTotal = formData.valor_pago_centavos >= conta.valor_aberto_centavos;
+        const quitacaoTotal = faltaParaQuitarCentavos === 0;
         return (
             <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-200">
                 <div className="bg-white rounded-md shadow-2xl border border-slate-200 max-w-md w-full p-8 text-center animate-in zoom-in-95 duration-200">
@@ -243,6 +272,14 @@ export const BaixarContaPagarModal: React.FC<BaixarContaPagarModalProps> = ({ co
                                 {error}
                             </div>
                         )}
+                        {diasAtraso > 0 && (
+                            <div className="p-3 bg-amber-50 border border-amber-200 text-amber-900 rounded-md flex items-start gap-2 text-xs font-semibold">
+                                <AlertTriangle className="h-4 w-4 shrink-0 text-amber-700 mt-0.5" />
+                                <span>
+                                    <span className="font-bold">{diasAtraso} dias</span> em atraso. Informe juros e multa manualmente conforme a regra da empresa.
+                                </span>
+                            </div>
+                        )}
                         {formData.data_pagamento && formData.data_pagamento !== dataHojeIsoLocal() && (
                             <div className="p-3 bg-amber-50 border border-amber-200 text-amber-900 rounded-md flex items-start gap-2 text-xs font-semibold">
                                 <AlertTriangle className="h-4 w-4 shrink-0 text-amber-700 mt-0.5" />
@@ -263,8 +300,21 @@ export const BaixarContaPagarModal: React.FC<BaixarContaPagarModalProps> = ({ co
                                     required
                                 />
                                 <p className="text-[10px] text-slate-500 font-semibold">
-                                    Valor em aberto: {formatCentavos(conta.valor_aberto_centavos)}
+                                    Valor em aberto (sem juros/multa): {formatCentavos(conta.valor_aberto_centavos)}
                                 </p>
+                                {valorEditadoManualmente ? (
+                                    <button
+                                        type="button"
+                                        onClick={() => setValorEditadoManualmente(false)}
+                                        className="text-[10px] font-semibold text-slate-600 underline hover:text-slate-900"
+                                    >
+                                        Atualizar para quitação total (Total: {formatCentavos(totalDevidoCentavos)})
+                                    </button>
+                                ) : (
+                                    <p className="text-[10px] text-slate-400">
+                                        Considera os juros, a multa e o desconto informados abaixo.
+                                    </p>
+                                )}
                             </div>
 
                             <div className="space-y-1">
@@ -310,6 +360,48 @@ export const BaixarContaPagarModal: React.FC<BaixarContaPagarModalProps> = ({ co
                                 />
                             </div>
                         </div>
+
+                        {(formData.valor_juros_centavos > 0 || formData.valor_multa_centavos > 0 || formData.valor_desconto_centavos > 0) && (
+                            <div className="text-xs bg-white border border-slate-200 rounded-md p-3 space-y-1">
+                                <div className="flex justify-between text-slate-600">
+                                    <span>Valor em aberto</span>
+                                    <span className="font-mono">{formatCentavos(conta.valor_aberto_centavos)}</span>
+                                </div>
+                                {formData.valor_juros_centavos > 0 && (
+                                    <div className="flex justify-between text-slate-600">
+                                        <span>(+) Juros</span>
+                                        <span className="font-mono">{formatCentavos(formData.valor_juros_centavos)}</span>
+                                    </div>
+                                )}
+                                {formData.valor_multa_centavos > 0 && (
+                                    <div className="flex justify-between text-slate-600">
+                                        <span>(+) Multa</span>
+                                        <span className="font-mono">{formatCentavos(formData.valor_multa_centavos)}</span>
+                                    </div>
+                                )}
+                                {formData.valor_desconto_centavos > 0 && (
+                                    <div className="flex justify-between text-slate-600">
+                                        <span>(−) Desconto</span>
+                                        <span className="font-mono">{formatCentavos(formData.valor_desconto_centavos)}</span>
+                                    </div>
+                                )}
+                                <div className="flex justify-between font-bold text-slate-900 border-t border-slate-200 pt-1">
+                                    <span>Total a pagar (quitação total)</span>
+                                    <span className="font-mono">{formatCentavos(totalDevidoCentavos)}</span>
+                                </div>
+                            </div>
+                        )}
+
+                        {faltaParaQuitarCentavos > 0 && (
+                            <div className="p-3 bg-amber-50 border border-amber-200 text-amber-900 rounded-md flex items-start gap-2 text-xs font-semibold">
+                                <AlertTriangle className="h-4 w-4 shrink-0 text-amber-700 mt-0.5" />
+                                <span>
+                                    Atenção: faltam {formatCentavos(faltaParaQuitarCentavos)} para cobrir o valor total (juros/multa incluídos).
+                                    Se confirmar assim, o título ficará <strong>parcialmente pago</strong>, com {formatCentavos(faltaParaQuitarCentavos)} em aberto.
+                                    Para dar baixa total, ajuste o "Valor a Pagar" para {formatCentavos(totalDevidoCentavos)}.
+                                </span>
+                            </div>
+                        )}
 
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                             <div className="space-y-1">

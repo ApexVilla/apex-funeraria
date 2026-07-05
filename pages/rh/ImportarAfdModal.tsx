@@ -3,13 +3,15 @@ import { Modal } from '../../components/ui/Modal';
 import { Button, Badge } from '../../components/ui/Components';
 import { useToast } from '../../lib/ToastStore';
 import { supabase } from '../../lib/supabase';
-import { type TipoBatida, chaveDiaPontoUsuario, intervaloDiaLocal, diaLocalFromTimestamp } from '../../lib/pontoUtils';
+import { type TipoBatida, chaveDiaPontoUsuario, intervaloDiaLocal, diaLocalFromTimestamp, type BatidaPonto } from '../../lib/pontoUtils';
+import { parseAfdTextAndNames, buscarUserIdPorIdentificadorRelogio, registrarIdentificadorRelogio } from '../../lib/afdParser';
 import {
   AFD_ANO_MINIMO_IMPORTACAO,
   colaboradorElegivelFolhaPonto,
-  marcacoesAfdDentroDoAnoMinimo,
   mapearTiposBatidaImportacaoRelogio,
+  mesclarHorariosAfdComExistentes,
   normalizarBatidasAfdDia,
+  resolverImportacaoAfdDia,
 } from '../../lib/pontoRules';
 import {
   FileText,
@@ -43,7 +45,8 @@ interface ImportItem {
   nome: string;
   role: string;
   empresaId: string;
-  dates: Record<string, string[]>; // { [date]: ['08:00', '12:00'] }
+  /** Por dia: horários a gravar e se deve mesclar com batidas já existentes. */
+  dates: Record<string, { times: string[]; mesclar: boolean }>;
 }
 
 interface AfdEmployeeRow {
@@ -94,8 +97,8 @@ export const ImportarAfdModal: React.FC<Props> = ({
   const [manualMappings, setManualMappings] = useState<Record<string, string>>({}); // PIS limpo -> userId selecionado
   const [afdEmployees, setAfdEmployees] = useState<AfdEmployeeRow[]>([]); // Lista de funcionários detectados no arquivo
   const [filterType, setFilterType] = useState<'all' | 'linked' | 'unlinked'>('all');
-  /** Dias que já possuem batida no banco — não serão sobrescritos na reimportação. */
-  const [diasJaPreenchidos, setDiasJaPreenchidos] = useState<Set<string>>(new Set());
+  /** Batidas já gravadas por user+dia — usadas para mesclar intervalo de almoço. */
+  const [batidasExistentesPorDia, setBatidasExistentesPorDia] = useState<Map<string, BatidaPonto[]>>(new Map());
   const [marcacoesIgnoradasAno, setMarcacoesIgnoradasAno] = useState(0);
 
   // Stats
@@ -110,7 +113,7 @@ export const ImportarAfdModal: React.FC<Props> = ({
     setDatabasePisMap(new Map());
     setManualMappings({});
     setAfdEmployees([]);
-    setDiasJaPreenchidos(new Set());
+    setBatidasExistentesPorDia(new Map());
     setMarcacoesIgnoradasAno(0);
     setProgress(0);
     setLoading(false);
@@ -141,7 +144,7 @@ export const ImportarAfdModal: React.FC<Props> = ({
             ignoradasAno > 0
               ? ` Nenhuma marcação de ${AFD_ANO_MINIMO_IMPORTACAO} em diante foi encontrada (${ignoradasAno} de anos anteriores ignoradas).`
               : '';
-          showToast(`Nenhum registro de ponto do tipo 3 (marcação) foi encontrado no arquivo.${msgAno}`, 'error');
+          showToast(`Nenhum registro de ponto (tipos 3 ou 7) foi encontrado no arquivo.${msgAno}`, 'error');
           resetState();
           return;
         }
@@ -159,63 +162,6 @@ export const ImportarAfdModal: React.FC<Props> = ({
     reader.readAsText(file);
   };
 
-  // Parser do padrão AFD
-  const parseAfdTextAndNames = (text: string) => {
-    const lines = text.split(/\r?\n/);
-    const punches: AfdPunch[] = [];
-    const nameMap = new Map<string, string>();
-    let ignoradasAno = 0;
-
-    for (const line of lines) {
-      if (line.length < 33) continue;
-
-      const tipo = line.substring(9, 10);
-
-      // Tipo 3: Marcação de Ponto
-      if (tipo === '3') {
-        const dd = line.substring(10, 12);
-        const mm = line.substring(12, 14);
-        const yyyy = line.substring(14, 18);
-
-        if (!marcacoesAfdDentroDoAnoMinimo(yyyy)) {
-          ignoradasAno++;
-          continue;
-        }
-
-        const dataStr = `${yyyy}-${mm}-${dd}`;
-
-        const hh = line.substring(18, 20);
-        const min = line.substring(20, 22);
-        const horaStr = `${hh}:${min}`;
-
-        const pis = line.substring(22, 33).trim();
-
-        if (
-          /^\d{4}-\d{2}-\d{2}$/.test(dataStr) &&
-          /^\d{2}:\d{2}$/.test(horaStr) &&
-          pis.length > 0
-        ) {
-          punches.push({
-            pis: pis.replace(/\D/g, ''),
-            dataStr,
-            horaStr,
-          });
-        }
-      }
-
-      // Tipo 5: Cadastro de Empregado
-      if (tipo === '5') {
-        const pis = line.substring(23, 34).trim();
-        const nome = line.substring(34, 184).trim();
-        if (pis && nome) {
-          nameMap.set(pis.replace(/\D/g, ''), nome);
-        }
-      }
-    }
-
-    return { punches, nameMap, ignoradasAno };
-  };
-
   // Normalização de nomes
   const normalizeName = (name: string): string => {
     return name
@@ -226,6 +172,10 @@ export const ImportarAfdModal: React.FC<Props> = ({
       .trim();
   };
 
+  /** Nome no relógio costuma vir com prefixo numérico (ex.: 5DANEIMY → daneimy). */
+  const normalizeNomeRelogio = (name: string): string =>
+    normalizeName(name).replace(/^\d+/, '').trim();
+
   // Associar PIS aos colaboradores
   const analyzePunches = async (punches: AfdPunch[], nameMap: Map<string, string>) => {
     try {
@@ -234,19 +184,18 @@ export const ImportarAfdModal: React.FC<Props> = ({
       const { data: rhDetails, error } = idsConsulta.length
         ? await supabase
             .from('rh_colaborador_detalhes')
-            .select('usuario_id, pis')
+            .select('usuario_id, pis, cpf')
             .in('usuario_id', idsConsulta)
         : { data: [], error: null };
 
       if (error) throw error;
 
-      // Mapear PIS limpo -> usuario_id (apenas colaboradores que batem ponto)
+      // Mapear PIS/CPF limpo -> usuario_id (apenas colaboradores que batem ponto)
       const dbMap = new Map<string, string>();
       rhDetails?.forEach((item) => {
-        if (item.pis && idsElegiveis.has(item.usuario_id)) {
-          const clean = item.pis.replace(/\D/g, '');
-          if (clean) dbMap.set(clean, item.usuario_id);
-        }
+        if (!idsElegiveis.has(item.usuario_id)) return;
+        if (item.pis) registrarIdentificadorRelogio(dbMap, item.pis, item.usuario_id);
+        if (item.cpf) registrarIdentificadorRelogio(dbMap, item.cpf, item.usuario_id);
       });
       setDatabasePisMap(dbMap);
 
@@ -254,7 +203,13 @@ export const ImportarAfdModal: React.FC<Props> = ({
       const colabsByName = new Map<string, any>();
       colaboradoresElegiveis.forEach((c) => {
         if (c.nome) {
-          colabsByName.set(normalizeName(c.nome), c);
+          const full = normalizeName(c.nome);
+          colabsByName.set(full, c);
+          colabsByName.set(normalizeNomeRelogio(c.nome), c);
+          const primeiroNome = full.split(' ')[0];
+          if (primeiroNome && primeiroNome.length >= 3) {
+            colabsByName.set(primeiroNome, c);
+          }
         }
       });
 
@@ -264,7 +219,7 @@ export const ImportarAfdModal: React.FC<Props> = ({
       const detectedEmployees: AfdEmployeeRow[] = [];
 
       uniquePis.forEach((pis) => {
-        const dbUserId = dbMap.get(pis);
+        const dbUserId = buscarUserIdPorIdentificadorRelogio(dbMap, pis);
         const nameInFile = nameMap.get(pis) || '';
 
         if (dbUserId && idsElegiveis.has(dbUserId)) {
@@ -278,7 +233,7 @@ export const ImportarAfdModal: React.FC<Props> = ({
           initialMappings[pis] = dbUserId;
         } else {
           // 2. Tenta pareamento automático por nome
-          const normFile = normalizeName(nameInFile);
+          const normFile = normalizeNomeRelogio(nameInFile) || normalizeName(nameInFile);
           const matchedColab = normFile ? colabsByName.get(normFile) : null;
 
           if (matchedColab) {
@@ -302,9 +257,38 @@ export const ImportarAfdModal: React.FC<Props> = ({
         }
       });
 
+      // PIS duplicado no relógio com mesmo nome (ex.: 1DANEIMY + 5DANEIMY) → mesma pessoa
+      uniquePis.forEach((pis) => {
+        if (initialMappings[pis]) return;
+        const nameInFile = nameMap.get(pis) || '';
+        const normFile = normalizeNomeRelogio(nameInFile) || normalizeName(nameInFile);
+        if (!normFile) return;
+
+        const parVinculado = Object.entries(initialMappings).find(([outroPis, uid]) => {
+          if (outroPis === pis || !uid) return false;
+          const outroNome = nameMap.get(outroPis) || '';
+          const normOutro = normalizeNomeRelogio(outroNome) || normalizeName(outroNome);
+          return normOutro === normFile;
+        });
+        if (!parVinculado) return;
+
+        const userId = parVinculado[1];
+        if (!idsElegiveis.has(userId)) return;
+
+        initialMappings[pis] = userId;
+        const idx = detectedEmployees.findIndex((e) => e.pis === pis);
+        if (idx >= 0) {
+          detectedEmployees[idx] = {
+            ...detectedEmployees[idx],
+            defaultUserId: userId,
+            initialMatchType: 'name',
+          };
+        }
+      });
+
       setAfdEmployees(detectedEmployees);
       setManualMappings(initialMappings);
-      await carregarDiasJaPreenchidosNoBanco(punches, initialMappings);
+      await carregarBatidasExistentesNoBanco(punches, initialMappings);
       setStep('confirm');
     } catch (e) {
       console.error(e);
@@ -313,8 +297,8 @@ export const ImportarAfdModal: React.FC<Props> = ({
     }
   };
 
-  /** Consulta quais dias (user + data) já têm batida gravada — evita reimportar o mesmo arquivo inteiro. */
-  const carregarDiasJaPreenchidosNoBanco = async (
+  /** Carrega batidas existentes por dia para mesclar intervalo de almoço do AFD. */
+  const carregarBatidasExistentesNoBanco = async (
     punches: AfdPunch[],
     mappings: Record<string, string>,
   ) => {
@@ -322,7 +306,7 @@ export const ImportarAfdModal: React.FC<Props> = ({
       new Set(Object.values(mappings).filter((id) => id && idsElegiveis.has(id))),
     );
     if (!userIds.length || !punches.length) {
-      setDiasJaPreenchidos(new Set());
+      setBatidasExistentesPorDia(new Map());
       return;
     }
 
@@ -332,48 +316,77 @@ export const ImportarAfdModal: React.FC<Props> = ({
 
     const { data, error } = await supabase
       .from('ponto_registros')
-      .select('user_id, timestamp')
+      .select('id, user_id, tipo, timestamp, origem, observacao')
       .in('user_id', userIds)
       .gte('timestamp', inicio)
       .lte('timestamp', fim);
 
     if (error) throw error;
 
-    const preenchidos = new Set<string>();
+    const porDia = new Map<string, BatidaPonto[]>();
     data?.forEach((row) => {
       const dia = diaLocalFromTimestamp(row.timestamp);
-      if (dia) preenchidos.add(chaveDiaPontoUsuario(row.user_id, dia));
+      if (!dia) return;
+      const chave = chaveDiaPontoUsuario(row.user_id, dia);
+      const batida: BatidaPonto = {
+        id: row.id,
+        tipo: row.tipo as TipoBatida,
+        timestamp: row.timestamp,
+        observacao: row.observacao || undefined,
+        origem:
+          row.origem === 'afd'
+            ? 'afd'
+            : row.origem === 'ajuste_manual'
+              ? 'ajuste_manual'
+              : 'app',
+      };
+      const lista = porDia.get(chave) || [];
+      lista.push(batida);
+      porDia.set(chave, lista);
     });
-    setDiasJaPreenchidos(preenchidos);
+    setBatidasExistentesPorDia(porDia);
   };
 
-  const diaJaPreenchidoNoBanco = (userId: string, dataStr: string) =>
-    diasJaPreenchidos.has(chaveDiaPontoUsuario(userId, dataStr));
-
   // Lista consolidada de colaboradores a importar baseada nos mapeamentos ativos
-  const { itemsToImport, diasIgnoradosJaPreenchidos } = useMemo(() => {
-    const colabGroups: Record<string, Record<string, string[]>> = {};
+  const { itemsToImport, diasIgnoradosJaPreenchidos, diasMescladosIntervalo, diasNovosImportacao } = useMemo(() => {
+    const colabGroups: Record<string, Record<string, { times: string[]; mesclar: boolean }>> = {};
     const diasIgnorados = new Set<string>();
+    const diasMesclados = new Set<string>();
 
+    const horariosAfdPorDia = new Map<string, string[]>();
     parsedPunches.forEach((p) => {
       const userId = manualMappings[p.pis];
       if (!userId) return;
+      const chave = chaveDiaPontoUsuario(userId, p.dataStr);
+      const lista = horariosAfdPorDia.get(chave) || [];
+      if (!lista.includes(p.horaStr)) lista.push(p.horaStr);
+      horariosAfdPorDia.set(chave, lista);
+    });
 
-      if (diaJaPreenchidoNoBanco(userId, p.dataStr)) {
-        diasIgnorados.add(chaveDiaPontoUsuario(userId, p.dataStr));
+    let diasNovos = 0;
+
+    horariosAfdPorDia.forEach((horariosAfd, chave) => {
+      const sep = chave.indexOf(':');
+      const userId = chave.slice(0, sep);
+      const dataStr = chave.slice(sep + 1);
+      if (!userId || !dataStr) return;
+
+      const existentes = batidasExistentesPorDia.get(chave) || [];
+      const horariosOrdenados = [...horariosAfd].sort();
+      const modo = resolverImportacaoAfdDia(horariosOrdenados, existentes);
+
+      if (modo === 'ignorar') {
+        diasIgnorados.add(chave);
         return;
       }
 
-      if (!colabGroups[userId]) {
-        colabGroups[userId] = {};
-      }
-      if (!colabGroups[userId][p.dataStr]) {
-        colabGroups[userId][p.dataStr] = [];
-      }
+      const times = mesclarHorariosAfdComExistentes(horariosOrdenados, existentes);
 
-      if (!colabGroups[userId][p.dataStr].includes(p.horaStr)) {
-        colabGroups[userId][p.dataStr].push(p.horaStr);
-      }
+      if (modo === 'mesclar') diasMesclados.add(chave);
+      else diasNovos++;
+
+      if (!colabGroups[userId]) colabGroups[userId] = {};
+      colabGroups[userId][dataStr] = { times, mesclar: modo === 'mesclar' };
     });
 
     const list: ImportItem[] = [];
@@ -392,14 +405,19 @@ export const ImportarAfdModal: React.FC<Props> = ({
       }
     });
 
-    return { itemsToImport: list, diasIgnoradosJaPreenchidos: diasIgnorados.size };
+    return {
+      itemsToImport: list,
+      diasIgnoradosJaPreenchidos: diasIgnorados.size,
+      diasMescladosIntervalo: diasMesclados.size,
+      diasNovosImportacao: diasNovos,
+    };
   }, [
     parsedPunches,
     manualMappings,
     colaboradoresElegiveis,
     empresaIdOperacao,
     idsElegiveis,
-    diasJaPreenchidos,
+    batidasExistentesPorDia,
   ]);
 
   // Contagem dinâmica de pessoas mapeadas e não mapeadas
@@ -486,8 +504,7 @@ export const ImportarAfdModal: React.FC<Props> = ({
 
       // 2. Loop por colaborador para gravar os pontos
       for (const item of itemsToImport) {
-        for (const [date, times] of Object.entries(item.dates)) {
-          // Limpar ponto existente daquele dia
+        for (const [date, planoDia] of Object.entries(item.dates)) {
           const { inicio, fim } = intervaloDiaLocal(date);
           const { error: delError } = await supabase
             .from('ponto_registros')
@@ -498,8 +515,7 @@ export const ImportarAfdModal: React.FC<Props> = ({
 
           if (delError) throw delError;
 
-          // Inserir as novas batidas
-          const sortedTimes = [...times].sort();
+          const sortedTimes = [...planoDia.times].sort();
           const types = mapearTiposBatidaImportacaoRelogio(sortedTimes.length, sortedTimes);
           const rascunho = sortedTimes.map((time, idx) => ({
             id: String(idx),
@@ -514,7 +530,9 @@ export const ImportarAfdModal: React.FC<Props> = ({
             tipo: batida.tipo,
             timestamp: batida.timestamp,
             origem: 'afd' as const,
-            observacao: 'Importado de relógio de ponto (AFD)',
+            observacao: planoDia.mesclar
+              ? 'Importado de relógio de ponto (AFD) — intervalo mesclado'
+              : 'Importado de relógio de ponto (AFD)',
           }));
 
           if (recordsToInsert.length > 0) {
@@ -639,9 +657,25 @@ export const ImportarAfdModal: React.FC<Props> = ({
                   ignoradas.
                 </div>
               )}
+              {diasMescladosIntervalo > 0 && (
+                <div className="text-blue-700 dark:text-blue-400 font-normal">
+                  {diasMescladosIntervalo} dia(s) terão horários de almoço do AFD mesclados com batidas já existentes.
+                </div>
+              )}
+              {diasNovosImportacao > 0 && (
+                <div className="text-indigo-700 dark:text-indigo-400 font-normal">
+                  {diasNovosImportacao} dia(s) vazio(s) serão preenchidos com o AFD.
+                </div>
+              )}
               {diasIgnoradosJaPreenchidos > 0 && (
                 <div className="text-emerald-700 dark:text-emerald-400 font-normal">
-                  {diasIgnoradosJaPreenchidos} dia(s) já preenchido(s) no sistema serão mantidos (não reimportados).
+                  {diasIgnoradosJaPreenchidos} dia(s) já completos no sistema serão mantidos.
+                </div>
+              )}
+              {itemsToImport.length === 0 && (
+                <div className="text-amber-700 dark:text-amber-400 font-normal">
+                  Nenhum dia elegível para importação. Verifique os vínculos de PIS (funcionários com mais de um PIS no
+                  relógio precisam estar todos vinculados ao mesmo colaborador).
                 </div>
               )}
             </div>
@@ -809,12 +843,14 @@ export const ImportarAfdModal: React.FC<Props> = ({
               <span className="text-xs font-bold text-slate-450 block">Pessoas incluídas na importação ({itemsToImport.length}):</span>
               <div className="max-h-[100px] overflow-y-auto border border-slate-150 dark:border-slate-850 rounded-lg p-2 bg-white dark:bg-slate-950 divide-y divide-slate-100 dark:divide-slate-850 text-xs">
                 {itemsToImport.map((item) => {
-                  const diasNovos = Object.keys(item.dates).length;
+                  const diasTotal = Object.keys(item.dates).length;
+                  const diasMescla = Object.values(item.dates).filter((d) => d.mesclar).length;
                   return (
                     <div key={item.userId} className="py-1.5 flex items-center justify-between">
                       <span className="font-bold text-slate-800 dark:text-white">{item.nome}</span>
                       <span className="text-[10px] font-semibold text-slate-400 bg-slate-50 border px-1.5 py-0.5 rounded">
-                        {diasNovos} dia(s) novo(s)
+                        {diasTotal} dia(s)
+                        {diasMescla > 0 ? ` (${diasMescla} c/ almoço)` : ''}
                       </span>
                     </div>
                   );
@@ -824,8 +860,9 @@ export const ImportarAfdModal: React.FC<Props> = ({
           )}
 
           <p className="text-[11px] text-slate-500 leading-normal font-semibold">
-            * Importação incremental: dias que já possuem batida no sistema são ignorados. Apenas dias vazios serão
-            preenchidos com os horários do AFD (com classificação automática de intervalo/almoço).
+            * Importação incremental: dias vazios recebem todas as batidas do AFD. Dias com entrada e saída mas sem
+            intervalo de almoço recebem as marcações de almoço do arquivo. Horários são classificados automaticamente
+            (entrada, início/fim do intervalo e saída).
           </p>
 
           <div className="flex gap-2 pt-2">

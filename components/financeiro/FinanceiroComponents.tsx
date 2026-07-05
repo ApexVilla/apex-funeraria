@@ -88,6 +88,8 @@ interface StatCardProps {
     sublabel?: string;
     icon: React.ReactNode;
     color: 'blue' | 'green' | 'red' | 'purple' | 'amber' | 'sky';
+    onClick?: () => void;
+    active?: boolean;
 }
 
 const colorMap = {
@@ -99,8 +101,17 @@ const colorMap = {
     sky: 'bg-sky-100 text-sky-600',
 };
 
-export const StatCard: React.FC<StatCardProps> = ({ label, value, sublabel, icon, color }) => (
-    <div className="rounded-lg border border-gray-100 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-sm p-6">
+export const StatCard: React.FC<StatCardProps> = ({ label, value, sublabel, icon, color, onClick, active }) => (
+    <div 
+        onClick={onClick}
+        className={`rounded-lg border shadow-sm p-6 transition-all ${
+            onClick ? 'cursor-pointer select-none hover:border-slate-350 dark:hover:border-slate-700 hover:shadow-md' : ''
+        } ${
+            active 
+                ? 'border-indigo-500 ring-2 ring-indigo-200 dark:ring-indigo-900 bg-indigo-50/10 dark:bg-indigo-950/20' 
+                : 'border-gray-100 dark:border-slate-800 bg-white dark:bg-slate-900'
+        }`}
+    >
         <div className="flex items-center justify-between">
             <div className="flex-1 min-w-0">
                 <p className="text-sm font-medium text-gray-600 dark:text-slate-400 truncate">{label}</p>

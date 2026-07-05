@@ -254,6 +254,24 @@ type RawPagavel = DREDrilldownPagavel & {
 
 type RawMovimentacao = DREDrilldownMovimentacao;
 
+/** Baixa de conta a receber com título (inner join) — fonte do DRE por data de recebimento. */
+type RawBaixaReceber = {
+    id: string;
+    valor_pago_centavos: number;
+    empresa_id?: string;
+    data_baixa: string;
+    fin_contas_receber: {
+        id?: string;
+        codigo?: string | null;
+        tipo_documento?: string | null;
+        descricao?: string | null;
+        data_competencia?: string | null;
+        filial_id?: string | null;
+        deleted_at?: string | null;
+        clientes?: { nome?: string } | { nome?: string }[] | null;
+    } | null;
+};
+
 /** Baixa de conta a pagar com título (inner join) — fonte do DRE por data de pagamento. */
 type RawBaixaPagar = {
     id: string;
@@ -292,6 +310,25 @@ function baixasPagarParaRawPagaveis(baixas: RawBaixaPagar[]): RawPagavel[] {
             plano_conta: extrairPlanoConta(cp?.fin_plano_contas),
             empresa_id: b.empresa_id,
             data_baixa: b.data_baixa,
+        };
+    });
+}
+
+function baixasReceberParaRawRecebiveis(baixas: RawBaixaReceber[]): RawRecebivel[] {
+    return baixas.map((b) => {
+        const cr = b.fin_contas_receber;
+        const cli = cr?.clientes;
+        const cliente_nome = Array.isArray(cli) ? cli[0]?.nome : cli?.nome;
+        return {
+            id: b.id,
+            codigo: cr?.codigo,
+            valor_pago_centavos: b.valor_pago_centavos,
+            tipo_documento: cr?.tipo_documento,
+            descricao: cr?.descricao,
+            empresa_id: b.empresa_id,
+            data_competencia: cr?.data_competencia || b.data_baixa,
+            data_pagamento: b.data_baixa,
+            cliente_nome: cliente_nome || null,
         };
     });
 }
@@ -683,7 +720,7 @@ export const DRE: React.FC = () => {
     const recebiveisDrilldown = useMemo(() => {
         const { inicio, fim } = periodo;
         return allRecebiveis.filter(
-            (r) => r.data_competencia && r.data_competencia >= inicio && r.data_competencia <= fim
+            (r) => r.data_pagamento && r.data_pagamento >= inicio && r.data_pagamento <= fim
                 && empresaIdsDrilldown.includes(r.empresa_id || ''),
         );
     }, [allRecebiveis, periodo, empresaIdsDrilldown]);
@@ -721,14 +758,29 @@ export const DRE: React.FC = () => {
             const [recRes, despRes, movRes] = await Promise.all([
                 (() => {
                     let q = supabase
-                        .from('fin_contas_receber')
-                        .select('id, codigo, valor_pago_centavos, tipo_documento, descricao, data_competencia, data_pagamento, status, empresa_id, clientes ( nome )')
+                        .from('fin_contas_receber_baixas')
+                        .select(`
+                            id,
+                            valor_pago_centavos,
+                            empresa_id,
+                            data_baixa,
+                            fin_contas_receber!inner (
+                                id,
+                                codigo,
+                                tipo_documento,
+                                descricao,
+                                data_competencia,
+                                filial_id,
+                                deleted_at,
+                                clientes ( nome )
+                            )
+                        `)
                         .in('empresa_id', idsAlvo)
-                        .is('deleted_at', null)
-                        .in('status', ['pago', 'pago_parcial'])
-                        .gte('data_competencia', queryInicio)
-                        .lte('data_competencia', queryFim);
-                    if (shouldFilterByFilial) q = q.eq('filial_id', filialId);
+                        .eq('estornada', false)
+                        .is('fin_contas_receber.deleted_at', null)
+                        .gte('data_baixa', queryInicio)
+                        .lte('data_baixa', queryFim);
+                    if (shouldFilterByFilial && filialId) q = q.eq('fin_contas_receber.filial_id', filialId);
                     return q;
                 })(),
                 (() => {
@@ -773,12 +825,7 @@ export const DRE: React.FC = () => {
                 })(),
             ]);
 
-            const recebiveis = ((recRes.data || []) as Array<RawRecebivel & { clientes?: { nome?: string } | { nome?: string }[] | null }>).map((r) => {
-                const cli = r.clientes;
-                const cliente_nome = Array.isArray(cli) ? cli[0]?.nome : cli?.nome;
-                const { clientes: _c, ...rest } = r;
-                return { ...rest, cliente_nome: cliente_nome || null };
-            });
+            const recebiveis = baixasReceberParaRawRecebiveis((recRes.data || []) as RawBaixaReceber[]);
             const pagaveis = baixasPagarParaRawPagaveis((despRes.data || []) as RawBaixaPagar[]);
             const movimentacoes = (movRes.data || []) as RawMovimentacao[];
 
@@ -786,7 +833,7 @@ export const DRE: React.FC = () => {
             setAllPagaveis(pagaveis);
             setAllMovimentacoes(movimentacoes);
 
-            const recFiltrados = recebiveis.filter(r => r.data_competencia && r.data_competencia >= inicio && r.data_competencia <= fim);
+            const recFiltrados = recebiveis.filter(r => r.data_pagamento && r.data_pagamento >= inicio && r.data_pagamento <= fim);
             const pagFiltrados = pagaveis.filter(p => p.data_baixa && p.data_baixa >= inicio && p.data_baixa <= fim);
             const movFiltrados = movimentacoes.filter(m => m.data_competencia && m.data_competencia >= inicio && m.data_competencia <= fim);
 
@@ -859,7 +906,7 @@ export const DRE: React.FC = () => {
             : [abaAtiva];
             
         pontos.forEach((p) => {
-            const recMes = allRecebiveis.filter(r => idsAlvo.includes(r.empresa_id || '') && r.data_competencia && r.data_competencia.startsWith(p.mesYm));
+            const recMes = allRecebiveis.filter(r => idsAlvo.includes(r.empresa_id || '') && r.data_pagamento && r.data_pagamento.startsWith(p.mesYm));
             const pagMes = allPagaveis.filter(pPay => idsAlvo.includes(pPay.empresa_id || '') && pPay.data_baixa && pPay.data_baixa.startsWith(p.mesYm));
             const movMes = allMovimentacoes.filter(m => idsAlvo.includes(m.empresa_id || '') && m.data_competencia && m.data_competencia.startsWith(p.mesYm));
             

@@ -22,6 +22,7 @@ import {
   telefoneClienteExibicao,
   type ResultadoBuscaTitularAtendimento,
 } from '../../lib/buscaCliente';
+import { clienteEhFuncionario } from '../../lib/clienteFuncionario';
 import { ColaboradorSearchSelect } from '../../components/common/ColaboradorSearchSelect';
 import { OpcaoSearchSelect } from '../../components/common/OpcaoSearchSelect';
 import { RELIGIOES, textoExibicaoReligiao } from '../../lib/religioes';
@@ -85,6 +86,9 @@ export const AtendimentoForm: React.FC = () => {
     formulario_preparacao: '',
     local_velorio: '',
     local_sepultamento: '',
+    local_saida_enterro: '',
+    sepultamento_quadra: '',
+    sepultamento_lote: '',
     religiao_falecido: '',
     data_falecido: '',
     data_nascimento_falecido: '',
@@ -317,6 +321,9 @@ export const AtendimentoForm: React.FC = () => {
           formulario_preparacao: (atd as any).formulario_preparacao || '',
           local_velorio: (atd as any).local_velorio || '',
           local_sepultamento: (atd as any).local_sepultamento || '',
+          local_saida_enterro: (atd as any).local_saida_enterro || '',
+          sepultamento_quadra: (atd as any).sepultamento_quadra || '',
+          sepultamento_lote: (atd as any).sepultamento_lote || '',
           religiao_falecido: (atd as any).religiao_falecido || '',
           data_falecido: (atd as any).data_falecido || '',
           data_nascimento_falecido: (atd as any).data_nascimento_falecido || '',
@@ -1107,6 +1114,9 @@ export const AtendimentoForm: React.FC = () => {
       formulario_preparacao: form.formulario_preparacao,
       local_velorio: form.local_velorio,
       local_sepultamento: form.local_sepultamento,
+      local_saida_enterro: form.local_saida_enterro,
+      sepultamento_quadra: form.sepultamento_quadra,
+      sepultamento_lote: form.sepultamento_lote,
       religiao_falecido: form.religiao_falecido,
       data_falecido: form.data_falecido,
       data_nascimento_falecido: form.data_nascimento_falecido,
@@ -1486,7 +1496,14 @@ export const AtendimentoForm: React.FC = () => {
                           onClick={() => void selecionarClienteEncontrado(c)}
                           className="w-full text-left px-3 py-2 rounded-lg border bg-white hover:bg-blue-50 transition-colors"
                         >
-                          <div className="font-medium text-gray-900">{c.nome}</div>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <div className="font-medium text-gray-900">{c.nome}</div>
+                            {clienteEhFuncionario(c) ? (
+                              <span className="inline-flex rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-indigo-800">
+                                Funcionário
+                              </span>
+                            ) : null}
+                          </div>
                           <div className="text-xs text-gray-500 mt-0.5">
                             {c.cpf || '—'} • {telefoneClienteExibicao(c)}
                           </div>
@@ -1528,7 +1545,14 @@ export const AtendimentoForm: React.FC = () => {
                             onClick={() => void selecionarResultadoPlano(r)}
                             className="w-full text-left px-3 py-2 rounded-lg border bg-white hover:bg-purple-50 transition-colors"
                           >
+                          <div className="flex items-center gap-2 flex-wrap">
                             <div className="font-medium text-gray-900">{c.nome}</div>
+                            {clienteEhFuncionario(c) ? (
+                              <span className="inline-flex rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-indigo-800">
+                                Funcionário
+                              </span>
+                            ) : null}
+                          </div>
                             <div className="text-xs text-gray-500 mt-0.5">
                               {c.cpf || '—'} • {telefoneClienteExibicao(c)}
                             </div>
@@ -1589,7 +1613,14 @@ export const AtendimentoForm: React.FC = () => {
                       <p className={`text-xs font-semibold uppercase ${form.tipo_atendimento === 'plano' ? 'text-purple-800' : 'text-blue-800'}`}>
                         {form.tipo_atendimento === 'plano' ? 'Titular do contrato' : 'Responsável pelo atendimento'}
                       </p>
-                      <p className="font-semibold text-gray-900">{titularSelecionado?.nome || contatoBusca || '—'}</p>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <p className="font-semibold text-gray-900">{titularSelecionado?.nome || contatoBusca || '—'}</p>
+                        {titularSelecionado && clienteEhFuncionario(titularSelecionado) ? (
+                          <span className="inline-flex rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-indigo-800">
+                            Funcionário
+                          </span>
+                        ) : null}
+                      </div>
                       <p className="text-sm text-gray-600">
                         {titularSelecionado?.cpf || '—'} • {titularSelecionado ? telefoneClienteExibicao(titularSelecionado) : '—'}
                       </p>
@@ -2030,7 +2061,27 @@ export const AtendimentoForm: React.FC = () => {
                     label="Local de Sepultamento"
                     value={form.local_sepultamento}
                     onChange={(e) => setForm(p => ({ ...p, local_sepultamento: e.target.value }))}
-                    placeholder="Cemitério e quadra/lote"
+                    placeholder="Cemitério"
+                  />
+                  <div className="grid grid-cols-2 gap-4">
+                    <Input
+                      label="Quadra (Qd)"
+                      value={form.sepultamento_quadra || ''}
+                      onChange={(e) => setForm(p => ({ ...p, sepultamento_quadra: e.target.value }))}
+                      placeholder="Ex: A"
+                    />
+                    <Input
+                      label="Lote (Lt)"
+                      value={form.sepultamento_lote || ''}
+                      onChange={(e) => setForm(p => ({ ...p, sepultamento_lote: e.target.value }))}
+                      placeholder="Ex: 12"
+                    />
+                  </div>
+                  <Input
+                    label="Local de Saída do Enterro"
+                    value={form.local_saida_enterro || ''}
+                    onChange={(e) => setForm(p => ({ ...p, local_saida_enterro: e.target.value }))}
+                    placeholder="Local de partida do cortejo"
                   />
                   <OpcaoSearchSelect
                     label="Religião"

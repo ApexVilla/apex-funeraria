@@ -49,6 +49,7 @@ export async function gerarProximoCodigoContaPagar(empresaId: string): Promise<s
       .select('id')
       .eq('empresa_id', emp)
       .eq('codigo', codigo)
+      .is('deleted_at', null)
       .maybeSingle();
     if (!exists) return codigo;
   }

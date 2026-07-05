@@ -1,4 +1,9 @@
 import { supabase } from './supabase';
+import {
+  avaliarElegibilidadeReimpressaoCobrador,
+  contarReimpressoesRecebimentosCampo,
+  dataMinimaReimpressaoCobrador,
+} from './cobradorReciboReimpressao';
 
 export type RecebimentoCampoDto = {
   id: string;
@@ -15,6 +20,13 @@ export type RecebimentoCampoDto = {
   cobrador_nome: string;
   forma_pagamento: string;
   status: 'confirmado' | 'pendente_conferencia';
+  empresa_id?: string;
+  /** Reimpressões já feitas (não conta a 1ª na baixa). */
+  reimpressoes_count?: number;
+  reimpressao_permitida?: boolean;
+  reimpressao_bloqueio?: string;
+  reimpressoes_restantes?: number;
+  reimpressao_dias_restantes?: number;
 };
 
 export type CobradorComissaoDto = {
@@ -34,6 +46,33 @@ export type FiltroRecebimentosCampo = {
   data_fim?: string;
   limite?: number;
 };
+
+export type FormaPagamentoRecebimentoCampo =
+  | 'dinheiro'
+  | 'pix'
+  | 'cartao'
+  | 'boleto'
+  | 'transferencia';
+
+/** Valores aceitos pelo CHECK de cob_recebimentos_campo.forma_pagamento. */
+export function normalizarFormaPagamentoRecebimentoCampo(
+  forma: string | null | undefined,
+): FormaPagamentoRecebimentoCampo {
+  const bruto = String(forma || '')
+    .toLowerCase()
+    .trim()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+
+  if (bruto === 'cartao_credito' || bruto === 'cartao_debito' || bruto === 'credito' || bruto === 'debito') {
+    return 'cartao';
+  }
+  if (bruto === 'pix') return 'pix';
+  if (bruto === 'boleto') return 'boleto';
+  if (bruto === 'transferencia') return 'transferencia';
+  if (bruto === 'cartao') return 'cartao';
+  return 'dinheiro';
+}
 
 /** Baixa financeira atribuída a um cobrador para cálculo de comissão. */
 export type BaixaComissaoCobradorDto = {
@@ -248,7 +287,7 @@ export async function listarRecebimentosCampo(
     .from('cob_recebimentos_campo')
     .select(
       `
-      id, data, valor_centavos, forma_pagamento, status, cliente_id, cobrador_id, conta_receber_id,
+      id, empresa_id, data, valor_centavos, forma_pagamento, status, cliente_id, cobrador_id, conta_receber_id,
       clientes ( nome, codigo ),
       cobradores ( nome ),
       fin_contas_receber (
@@ -287,6 +326,7 @@ export async function listarRecebimentosCampo(
     const contrato = String(ass?.codigo || '').trim();
     return {
       id: String(row.id),
+      empresa_id: row.empresa_id ? String(row.empresa_id) : undefined,
       data: String(row.data || '').slice(0, 10),
       valor_centavos: Number(row.valor_centavos || 0),
       cliente_id: String(row.cliente_id || ''),
@@ -307,7 +347,13 @@ export async function listarRecebimentosCampo(
 /** Recebimentos em campo de um cliente (reimpressão de recibo). */
 export async function listarRecebimentosCampoPorCliente(
   empresaIds: string[],
-  filtro: { cliente_id: string; cobrador_id?: string; limite?: number },
+  filtro: {
+    cliente_id: string;
+    cobrador_id?: string;
+    limite?: number;
+    /** Cobrador em campo: só últimos 7 dias elegíveis. */
+    apenas_janela_cobrador?: boolean;
+  },
 ): Promise<RecebimentoCampoDto[]> {
   const clienteId = (filtro.cliente_id || '').trim();
   if (!clienteId) return [];
@@ -316,6 +362,32 @@ export async function listarRecebimentosCampoPorCliente(
     cliente_id: clienteId,
     cobrador_id: filtro.cobrador_id?.trim() || undefined,
     limite: filtro.limite ?? 120,
+    data_inicio: filtro.apenas_janela_cobrador ? dataMinimaReimpressaoCobrador() : undefined,
+  });
+}
+
+export async function enriquecerRecebimentosComReimpressao(
+  rows: RecebimentoCampoDto[],
+  opts: { cobradorRestrito: boolean },
+): Promise<RecebimentoCampoDto[]> {
+  if (rows.length === 0) return rows;
+
+  const counts = await contarReimpressoesRecebimentosCampo(rows.map((r) => r.id));
+
+  return rows.map((row) => {
+    const reimpressoes_count = counts.get(row.id) || 0;
+    if (!opts.cobradorRestrito) {
+      return { ...row, reimpressoes_count };
+    }
+    const eleg = avaliarElegibilidadeReimpressaoCobrador(row.data, reimpressoes_count);
+    return {
+      ...row,
+      reimpressoes_count,
+      reimpressao_permitida: eleg.permitido,
+      reimpressao_bloqueio: eleg.motivo_bloqueio,
+      reimpressoes_restantes: eleg.reimpressoes_restantes,
+      reimpressao_dias_restantes: eleg.dias_restantes,
+    };
   });
 }
 
@@ -329,7 +401,7 @@ export async function buscarRecebimentoCampo(
   let q = supabase
     .from('cob_recebimentos_campo')
     .select(
-      'id, data, valor_centavos, forma_pagamento, status, cliente_id, cobrador_id, observacao, conta_receber_id, cobranca_pendente_id, clientes ( nome ), cobradores ( nome )',
+      'id, empresa_id, data, valor_centavos, forma_pagamento, status, cliente_id, cobrador_id, observacao, conta_receber_id, cobranca_pendente_id, clientes ( nome ), cobradores ( nome )',
     )
     .eq('id', id);
 
@@ -343,6 +415,7 @@ export async function buscarRecebimentoCampo(
   const cob = data.cobradores as { nome?: string } | null;
   return {
     id: String(data.id),
+    empresa_id: data.empresa_id ? String(data.empresa_id) : undefined,
     data: String(data.data || '').slice(0, 10),
     valor_centavos: Number(data.valor_centavos || 0),
     cliente_id: String(data.cliente_id || ''),

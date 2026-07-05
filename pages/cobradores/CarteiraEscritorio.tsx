@@ -13,6 +13,7 @@ import {
   removerClienteDaCarteiraEscritorio,
 } from '../../lib/carteiraEscritorio';
 import { clienteIdsComCobradorNaCarteira } from '../../lib/cobradorDisponiveis';
+import { clienteEhFuncionario } from '../../lib/clienteFuncionario';
 
 interface ClienteCarteiraEscritorio {
   cliente_id: string;
@@ -267,6 +268,11 @@ export const CarteiraEscritorio: React.FC = () => {
                     >
                       {c.nome}{' '}
                       <span className="text-gray-500 font-mono text-xs">{c.codigo || c.cpf}</span>
+                      {clienteEhFuncionario(c) ? (
+                        <span className="ml-2 inline-flex rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-indigo-800">
+                          Funcionário
+                        </span>
+                      ) : null}
                     </button>
                   </li>
                 ))}

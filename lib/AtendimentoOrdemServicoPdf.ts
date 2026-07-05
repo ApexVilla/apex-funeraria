@@ -336,7 +336,8 @@ export async function gerarOrdemServicoAtendimentoPdf(
     ['Local do óbito', String(falecido?.local_falecimento || '—')],
     ['Onde o corpo se encontra', String(atd.onde_corpo_se_encontra || '—')],
     ['Remover para velório / endereço', String(atd.local_velorio || '—')],
-    ['Sepultamento', String(atd.local_sepultamento || '—')],
+    ['Sepultamento', `${String(atd.local_sepultamento || '—')}${atd.sepultamento_quadra ? ` (Qd: ${atd.sepultamento_quadra})` : ''}${atd.sepultamento_lote ? ` (Lt: ${atd.sepultamento_lote})` : ''}`],
+    ['Saída do enterro', String(atd.local_saida_enterro || '—')],
     ['Motivo / médico', `${String(atd.motivo_morte || '—')} — ${String(atd.medico_nome_crm || '—')}`],
   ];
   autoTable(doc, {

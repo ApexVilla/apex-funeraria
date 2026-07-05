@@ -14,6 +14,7 @@ import type { ContaReceberDetalhada } from '../../lib/FinanceiroStore';
 import { Button, Card, Select } from '../ui/Components';
 import { Modal } from '../ui/Modal';
 import { ContratoResumoHeader } from './ContratoResumoHeader';
+import { ClienteEnderecosPanel } from './ClienteEnderecosPanel';
 import { formatarDataIsoPtBr, parcelaEstaVencida } from '../../lib/contratoDatas';
 import {
   dispararEmissaoBoletoEdge,
@@ -214,6 +215,8 @@ export const ContratoCobrancaView: React.FC<Props> = ({
       )}
 
       <ContratoResumoHeader cliente={cliente} assinatura={assinatura} />
+
+      <ClienteEnderecosPanel cliente={cliente} variant="cobranca" />
 
       <div className="border-b border-slate-200 pb-3">
         <h2 className="text-lg font-black uppercase tracking-tight text-slate-900">Cobrança</h2>

@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useCallback, useMemo } from 'react';
-import { normalizeSearchText, extractDigits, maskCpf, SEARCH_STOPWORDS } from './textUtils';
+import { normalizeSearchText, extractDigits, maskCpf, SEARCH_STOPWORDS, variantesBuscaAcento } from './textUtils';
 import { supabase } from './supabase';
 import { useAuth } from './AuthContext';
 import { FILIAL_TODAS_ID } from './filialConstants';
@@ -142,6 +142,10 @@ export interface ContaPagar {
     requer_aprovacao: boolean;
     parcela_numero: number;
     total_parcelas: number;
+    created_by?: string | null;
+    updated_by?: string | null;
+    /** Nome do usuário que lançou o título (join em listagens). */
+    usuario_lancamento_nome?: string;
     created_at: string;
 }
 
@@ -275,7 +279,41 @@ function applyEmpresaScopeReceber(q: any, ids: string[]): any | null {
     return q.in('empresa_id', ids);
 }
 
-const CP_SELECT = '*, fin_plano_contas ( codigo, nome ), filiais ( nome, empresa_id )';
+function filtroIlikePostgrest(coluna: string, valor: string): string {
+    const safe = String(valor || '').replace(/\\/g, '\\\\').replace(/"/g, '""');
+    return `${coluna}.ilike."%${safe}%"`;
+}
+
+function buildIlikeParts(
+    term: string,
+    columns: string[],
+    opts?: { includeVariants?: boolean; maxVariants?: number },
+): string[] {
+    const base = String(term || '')
+        .trim()
+        .replace(/[,;]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    if (!base) return [];
+
+    const parts = new Set<string>();
+    columns.forEach((column) => parts.add(filtroIlikePostgrest(column, base)));
+
+    if (opts?.includeVariants !== false) {
+        for (const variante of variantesBuscaAcento(base, opts?.maxVariants ?? 8)) {
+            columns.forEach((column) => parts.add(filtroIlikePostgrest(column, variante)));
+        }
+    }
+
+    return [...parts];
+}
+
+function matchesNormalizedSearch(value: string | null | undefined, normalizedTerm: string): boolean {
+    return normalizeSearchText(value).includes(normalizedTerm);
+}
+
+const CP_SELECT =
+    '*, fin_plano_contas ( codigo, nome ), filiais ( nome, empresa_id ), lancador:created_by ( nome )';
 
 function mapContaPagarComNatureza(row: Record<string, unknown>): ContaPagar {
     const rawPc = row.fin_plano_contas;
@@ -290,10 +328,17 @@ function mapContaPagarComNatureza(row: Record<string, unknown>): ContaPagar {
         fil && typeof fil === 'object' && (fil as { nome?: string }).nome
             ? String((fil as { nome?: string }).nome).trim()
             : '';
-    const { fin_plano_contas: _pc, filiais: _fil, ...rest } = row;
+    const rawLanc = row.lancador;
+    const lanc = Array.isArray(rawLanc) ? rawLanc[0] : rawLanc;
+    const usuarioLancamento =
+        lanc && typeof lanc === 'object'
+            ? String((lanc as { nome?: string }).nome || '').trim()
+            : '';
+    const { fin_plano_contas: _pc, filiais: _fil, lancador: _lanc, ...rest } = row;
     return {
         ...(rest as unknown as ContaPagar),
         natureza_financeira: natureza || '—',
+        ...(usuarioLancamento ? { usuario_lancamento_nome: usuarioLancamento } : {}),
         ...(filialNomeJoin ? { filial_nome: filialNomeJoin } : {}),
     };
 }
@@ -1367,12 +1412,12 @@ export const FinanceiroProvider: React.FC<{ children: React.ReactNode }> = ({ ch
                     mergedData = await executarQueryContasPagar(undefined, orderCol);
                 }
             } else {
-                const orDirect = [
-                    `codigo.ilike.%${searchTerm}%`,
-                    `descricao.ilike.%${searchTerm}%`,
-                    `fornecedor_nome.ilike.%${searchTerm}%`,
-                    `numero_nota_fiscal.ilike.%${searchTerm}%`,
-                ].join(',');
+                const normalizedTerm = normalizeSearchText(searchTerm);
+                const orDirect = buildIlikeParts(
+                    searchTerm,
+                    ['codigo', 'descricao', 'fornecedor_nome', 'numero_nota_fiscal'],
+                    { maxVariants: 8 },
+                ).join(',');
 
                 const directScoped = applyFiltrosComuns(
                     supabase.from('fin_contas_pagar').select(CP_SELECT),
@@ -1406,10 +1451,19 @@ export const FinanceiroProvider: React.FC<{ children: React.ReactNode }> = ({ ch
                 }
 
                 let byFornecedor: ContaPagar[] = [];
+                const fornecedorOrParts = [
+                    ...buildIlikeParts(searchTerm, ['nome'], { maxVariants: 8 }),
+                    filtroIlikePostgrest('codigo', searchTerm),
+                ];
+                if (digitosCodigo) {
+                    fornecedorOrParts.push(filtroIlikePostgrest('cnpj_cpf', digitosCodigo));
+                } else {
+                    fornecedorOrParts.push(filtroIlikePostgrest('cnpj_cpf', searchTerm));
+                }
                 let fornecedoresQ = supabase
                     .from('fornecedores')
                     .select('id')
-                    .or(`nome.ilike.%${searchTerm}%,codigo.ilike.%${searchTerm}%,cnpj_cpf.ilike.%${searchTerm}%`)
+                    .or(fornecedorOrParts.join(','))
                     .limit(80);
                 if (ids.length === 1) fornecedoresQ = fornecedoresQ.eq('empresa_id', ids[0]);
                 else fornecedoresQ = fornecedoresQ.in('empresa_id', ids);
@@ -1429,11 +1483,55 @@ export const FinanceiroProvider: React.FC<{ children: React.ReactNode }> = ({ ch
                     }
                 }
 
+                let byClienteFavorecido: ContaPagar[] = [];
+                const clienteOrParts = [
+                    ...buildIlikeParts(searchTerm, ['nome'], { maxVariants: 8 }),
+                    filtroIlikePostgrest('codigo', searchTerm),
+                ];
+                if (digitosCodigo) {
+                    clienteOrParts.push(filtroIlikePostgrest('cpf', digitosCodigo));
+                } else {
+                    clienteOrParts.push(filtroIlikePostgrest('cpf', searchTerm));
+                }
+                let clientesQ = supabase
+                    .from('clientes')
+                    .select('nome')
+                    .is('deleted_at', null)
+                    .or(clienteOrParts.join(','))
+                    .limit(80);
+                if (ids.length === 1) clientesQ = clientesQ.eq('empresa_id', ids[0]);
+                else clientesQ = clientesQ.in('empresa_id', ids);
+                const { data: clientesMatch, error: clientesError } = await clientesQ;
+
+                if (!clientesError && (clientesMatch ?? []).length > 0) {
+                    const nomesClientes = [...new Set(
+                        (clientesMatch ?? [])
+                            .map((c) => String(c.nome || '').trim())
+                            .filter(Boolean),
+                    )];
+                    if (nomesClientes.length > 0) {
+                        const clienteScoped = applyFiltrosComuns(
+                            supabase.from('fin_contas_pagar').select(CP_SELECT),
+                        );
+                        if (clienteScoped) {
+                            const { data: contasCliente, error: contasClienteError } = await clienteScoped
+                                .in('fornecedor_nome', nomesClientes)
+                                .order('data_vencimento', { ascending: true })
+                                .limit(100);
+                            if (!contasClienteError) byClienteFavorecido = contasCliente ?? [];
+                        }
+                    }
+                }
+
                 let byNatureza: ContaPagar[] = [];
+                const planoOrParts = [
+                    filtroIlikePostgrest('codigo', searchTerm),
+                    ...buildIlikeParts(searchTerm, ['nome'], { maxVariants: 8 }),
+                ];
                 let planosQ = supabase
                     .from('fin_plano_contas')
                     .select('id')
-                    .or(`codigo.ilike.%${searchTerm}%,nome.ilike.%${searchTerm}%`)
+                    .or(planoOrParts.join(','))
                     .limit(40);
                 if (ids.length === 1) planosQ = planosQ.eq('empresa_id', ids[0]);
                 else planosQ = planosQ.in('empresa_id', ids);
@@ -1454,20 +1552,21 @@ export const FinanceiroProvider: React.FC<{ children: React.ReactNode }> = ({ ch
                 }
 
                 const dedupe = new Map<string, ContaPagar>();
-                [...(byDirect ?? []), ...byCodigoExato, ...byFornecedor, ...byNatureza].forEach((item) => {
+                [...(byDirect ?? []), ...byCodigoExato, ...byFornecedor, ...byClienteFavorecido, ...byNatureza].forEach((item) => {
                     if (item?.id) dedupe.set(item.id, mapContaPagarComNatureza(item as unknown as Record<string, unknown>));
                 });
                 const idsFornecedor = new Set(byFornecedor.map((cp) => cp.id));
+                const idsClienteFavorecido = new Set(byClienteFavorecido.map((cp) => cp.id));
                 const idsNatureza = new Set(byNatureza.map((cp) => cp.id));
-                const termoBusca = searchTerm.toLowerCase();
                 mergedData = Array.from(dedupe.values()).filter((cp) =>
                     idsFornecedor.has(cp.id) ||
+                    idsClienteFavorecido.has(cp.id) ||
                     idsNatureza.has(cp.id) ||
                     contaPagarCodigoMatch(searchTerm, cp.codigo) ||
-                    (cp.descricao || '').toLowerCase().includes(termoBusca) ||
-                    (cp.fornecedor_nome || '').toLowerCase().includes(termoBusca) ||
-                    (cp.numero_nota_fiscal || '').toLowerCase().includes(termoBusca) ||
-                    (cp.natureza_financeira || '').toLowerCase().includes(termoBusca),
+                    matchesNormalizedSearch(cp.descricao, normalizedTerm) ||
+                    matchesNormalizedSearch(cp.fornecedor_nome, normalizedTerm) ||
+                    matchesNormalizedSearch(cp.numero_nota_fiscal, normalizedTerm) ||
+                    matchesNormalizedSearch(cp.natureza_financeira, normalizedTerm),
                 );
             }
 
@@ -1515,11 +1614,15 @@ export const FinanceiroProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
             const codigoFinal = await gerarProximoCodigoContaPagar(targetEmpresaId);
 
+            const { data: authData } = await supabase.auth.getSession();
+            const usuarioId = user?.id || authData.session?.user?.id || null;
+
             const insertRow = omitTituloTotaisGerados({
                 empresa_id: targetEmpresaId,
                 codigo: codigoFinal,
                 ...safeData,
                 ...(filialResolved ? { filial_id: filialResolved } : {}),
+                ...(usuarioId ? { created_by: usuarioId, updated_by: usuarioId } : {}),
             } as Record<string, unknown>);
 
             const { data: inserted, error: insertError } = await supabase
@@ -1535,13 +1638,18 @@ export const FinanceiroProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             handleError(err);
             throw err;
         }
-    }, [empresaId, dataRevisionEmpresa, loadContasPagar, shouldFilterByFilial, filialId]);
+    }, [empresaId, dataRevisionEmpresa, loadContasPagar, shouldFilterByFilial, filialId, user?.id]);
 
     const updateContaPagar = useCallback(async (id: string, data: Partial<ContaPagar>): Promise<boolean> => {
         setError(null);
         try {
             const { valor_total_centavos, valor_aberto_centavos, ...safeData } = data as any;
-            const updateRow = omitTituloTotaisGerados(safeData as Record<string, unknown>);
+            const { data: authData } = await supabase.auth.getSession();
+            const usuarioId = user?.id || authData.session?.user?.id || null;
+            const updateRow = omitTituloTotaisGerados({
+                ...safeData,
+                ...(usuarioId ? { updated_by: usuarioId } : {}),
+            } as Record<string, unknown>);
             const { error: updateError } = await supabase
                 .from('fin_contas_pagar')
                 .update(updateRow)
@@ -1554,7 +1662,7 @@ export const FinanceiroProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             handleError(err);
             return false;
         }
-    }, [empresaId, dataRevisionEmpresa, loadContasPagar, shouldFilterByFilial, filialId, dataRevision]);
+    }, [empresaId, dataRevisionEmpresa, loadContasPagar, shouldFilterByFilial, filialId, dataRevision, user?.id]);
 
     interface BaixarContaPagarParamsInterno {
         conta_pagar_id: string;

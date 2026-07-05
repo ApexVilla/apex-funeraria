@@ -127,17 +127,19 @@ export const DetalhesContaPagarModal: React.FC<DetalhesContaPagarModalProps> = (
     }>>(new Map());
 
     const [activeTab, setActiveTab] = useState<'geral' | 'pagamentos' | 'auditoria'>('geral');
+    const [contaAtual, setContaAtual] = useState<ContaPagar>(conta);
 
     const carregar = useCallback(async () => {
         setLoadingExtra(true);
         setErroExtra(null);
         try {
-            const [resBaixas, resCaixa, resFin] = await Promise.all([
+            const [resBaixas, resCaixa, resFin, resTitulo] = await Promise.all([
                 supabase
                     .from('fin_contas_pagar_baixas')
                     .select('id, created_at, data_baixa, valor_pago_centavos, valor_desconto_centavos, valor_juros_centavos, valor_multa_centavos, observacoes, tipo, forma_pagamento_id, conta_bancaria_id, created_by')
                     .eq('conta_pagar_id', conta.id)
                     .eq('empresa_id', conta.empresa_id)
+                    .eq('estornada', false)
                     .order('created_at', { ascending: true }),
                 supabase
                     .from('fin_caixa_movimentos')
@@ -150,11 +152,29 @@ export const DetalhesContaPagarModal: React.FC<DetalhesContaPagarModalProps> = (
                     .select('id, codigo, descricao, valor_centavos, data_movimentacao, conta_bancaria_id, created_at, created_by')
                     .eq('conta_pagar_id', conta.id)
                     .order('created_at', { ascending: true }),
+                supabase
+                    .from('fin_contas_pagar')
+                    .select('*')
+                    .eq('id', conta.id)
+                    .eq('empresa_id', conta.empresa_id)
+                    .maybeSingle(),
             ]);
 
             if (resBaixas.error) throw resBaixas.error;
             if (resCaixa.error) throw resCaixa.error;
             if (resFin.error) throw resFin.error;
+            if (resTitulo.error) throw resTitulo.error;
+
+            const tituloFresh = resTitulo.data;
+            if (tituloFresh) {
+                setContaAtual((prev) => ({
+                    ...prev,
+                    ...tituloFresh,
+                    fornecedor_nome: tituloFresh.fornecedor_nome ?? prev.fornecedor_nome,
+                    natureza_financeira: prev.natureza_financeira,
+                    filial_nome: prev.filial_nome,
+                }));
+            }
 
             const listaBaixas = (resBaixas.data ?? []) as BaixaRow[];
             const listaCaixa = (resCaixa.data ?? []) as CaixaMovRow[];
@@ -221,19 +241,45 @@ export const DetalhesContaPagarModal: React.FC<DetalhesContaPagarModalProps> = (
     }, [conta.id, conta.empresa_id]);
 
     useEffect(() => {
+        setContaAtual(conta);
+    }, [conta]);
+
+    useEffect(() => {
         void carregar();
     }, [carregar]);
+
+    const jurosMultaDasBaixas = baixas.reduce(
+        (acc, b) => ({
+            juros: acc.juros + (b.valor_juros_centavos || 0),
+            multa: acc.multa + (b.valor_multa_centavos || 0),
+        }),
+        { juros: 0, multa: 0 },
+    );
+
+    const jurosExibicao = Math.max(contaAtual.valor_juros_centavos || 0, jurosMultaDasBaixas.juros);
+    const multaExibicao = Math.max(contaAtual.valor_multa_centavos || 0, jurosMultaDasBaixas.multa);
+    const descontoExibicao = contaAtual.valor_desconto_centavos || 0;
+    const valorTotalExibicao = Math.max(
+        contaAtual.valor_total_centavos || 0,
+        contaAtual.valor_original_centavos + jurosExibicao + multaExibicao - descontoExibicao,
+    );
+    const valorPagoExibicao = contaAtual.valor_pago_centavos || 0;
+    const valorAbertoExibicao = Math.max(0, valorTotalExibicao - valorPagoExibicao);
+
+    const percentPago = valorTotalExibicao > 0
+        ? Math.min(100, Math.round((valorPagoExibicao / valorTotalExibicao) * 100))
+        : 0;
 
     const handleImprimirReciboBaixa = async (b: BaixaRow) => {
         const forma = b.forma_pagamento_id ? formaMap.get(b.forma_pagamento_id) : null;
         const cb = b.conta_bancaria_id ? contaMap.get(b.conta_bancaria_id) : null;
         await imprimirReciboContaPagar({
-            codigo: conta.codigo,
-            descricao: conta.descricao,
-            tipo_documento: conta.tipo_documento,
-            fornecedor_nome: conta.fornecedor_nome,
-            numero_nota_fiscal: conta.numero_nota_fiscal,
-            data_vencimento: conta.data_vencimento,
+            codigo: contaAtual.codigo,
+            descricao: contaAtual.descricao,
+            tipo_documento: contaAtual.tipo_documento,
+            fornecedor_nome: contaAtual.fornecedor_nome,
+            numero_nota_fiscal: contaAtual.numero_nota_fiscal,
+            data_vencimento: contaAtual.data_vencimento,
             valor_pago_centavos: b.valor_pago_centavos,
             data_pagamento: b.data_baixa?.slice(0, 10) || b.created_at.slice(0, 10),
             situacao: 'quitado',
@@ -241,11 +287,6 @@ export const DetalhesContaPagarModal: React.FC<DetalhesContaPagarModalProps> = (
             conta_bancaria: cb?.nome,
         });
     };
-
-    // Calcular o percentual de quitação para a barra de progresso premium
-    const percentPago = conta.valor_total_centavos > 0
-        ? Math.min(100, Math.round((conta.valor_pago_centavos / conta.valor_total_centavos) * 100))
-        : 0;
 
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-md p-4 sm:p-6 animate-in fade-in duration-300">
@@ -404,7 +445,7 @@ export const DetalhesContaPagarModal: React.FC<DetalhesContaPagarModalProps> = (
                                 <div className="bg-white rounded-md border border-slate-200/80 p-5 shadow-sm space-y-4">
                                     <div className="flex justify-between items-center pb-3 border-b border-slate-100">
                                         <span className="text-[10px] font-extrabold text-slate-800 uppercase tracking-widest">Situação do Título</span>
-                                        <StatusFinanceiroBadge status={conta.status} />
+                                        <StatusFinanceiroBadge status={contaAtual.status} />
                                     </div>
 
                                     {/* Progresso de Quitação Premium */}
@@ -416,9 +457,9 @@ export const DetalhesContaPagarModal: React.FC<DetalhesContaPagarModalProps> = (
                                         <div className="w-full h-2.5 bg-slate-100 rounded-full overflow-hidden border border-slate-200">
                                             <div 
                                                 className={`h-full rounded-full transition-all duration-500 ${
-                                                    conta.status === 'pago' || conta.status === 'quitado' 
+                                                    percentPago === 100
                                                         ? 'bg-emerald-500' 
-                                                        : conta.status === 'parcial' 
+                                                        : percentPago > 0
                                                         ? 'bg-amber-500' 
                                                         : 'bg-rose-500'
                                                 }`}
@@ -440,26 +481,34 @@ export const DetalhesContaPagarModal: React.FC<DetalhesContaPagarModalProps> = (
                                     <div className="space-y-2 text-xs">
                                         <div className="flex justify-between items-center text-slate-500 font-semibold uppercase tracking-wider">
                                             <span>Valor Original</span>
-                                            <span className="font-mono font-bold text-slate-700">{formatCentavos(conta.valor_original_centavos)}</span>
+                                            <span className="font-mono font-bold text-slate-700">{formatCentavos(contaAtual.valor_original_centavos)}</span>
                                         </div>
 
                                         <div className="flex justify-between items-center text-slate-500 font-semibold uppercase tracking-wider">
                                             <span>Juros & Multas (+)</span>
                                             <span className="font-mono font-semibold text-rose-700 bg-rose-50 px-2 py-0.5 rounded text-[11px] border border-rose-100">
-                                                {formatCentavos(conta.valor_juros_centavos + conta.valor_multa_centavos)}
+                                                {formatCentavos(jurosExibicao + multaExibicao)}
                                             </span>
                                         </div>
+                                        {(jurosExibicao > 0 || multaExibicao > 0) && (
+                                            <div className="flex justify-between items-center text-[10px] text-slate-400 font-medium pl-1">
+                                                <span>Juros · Multa</span>
+                                                <span className="font-mono">
+                                                    {formatCentavos(jurosExibicao)} · {formatCentavos(multaExibicao)}
+                                                </span>
+                                            </div>
+                                        )}
 
                                         <div className="flex justify-between items-center text-slate-500 font-semibold uppercase tracking-wider">
                                             <span>Descontos (-)</span>
                                             <span className="font-mono font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded text-[11px] border border-emerald-100">
-                                                {formatCentavos(conta.valor_desconto_centavos)}
+                                                {formatCentavos(descontoExibicao)}
                                             </span>
                                         </div>
 
                                         <div className="flex justify-between items-center pt-3 border-t border-slate-150 font-bold text-slate-900">
                                             <span className="uppercase tracking-wide text-[11px]">Valor Consolidado</span>
-                                            <span className="font-mono text-sm">{formatCentavos(conta.valor_total_centavos)}</span>
+                                            <span className="font-mono text-sm">{formatCentavos(valorTotalExibicao)}</span>
                                         </div>
                                     </div>
 
@@ -467,11 +516,11 @@ export const DetalhesContaPagarModal: React.FC<DetalhesContaPagarModalProps> = (
                                     <div className="grid grid-cols-2 gap-2.5 pt-4 border-t border-dashed border-slate-200">
                                         <div className="bg-emerald-50/50 p-3 rounded border border-emerald-200/80 flex flex-col">
                                             <span className="text-[9px] font-bold text-emerald-800 uppercase tracking-wider">Total Pago</span>
-                                            <span className="text-sm font-mono font-black text-emerald-700 mt-1">{formatCentavos(conta.valor_pago_centavos)}</span>
+                                            <span className="text-sm font-mono font-black text-emerald-700 mt-1">{formatCentavos(valorPagoExibicao)}</span>
                                         </div>
                                         <div className="bg-rose-50/40 p-3 rounded border border-rose-200/80 flex flex-col">
                                             <span className="text-[9px] font-bold text-rose-800 uppercase tracking-wider">Total Aberto</span>
-                                            <span className="text-sm font-mono font-black text-rose-700 mt-1">{formatCentavos(conta.valor_aberto_centavos)}</span>
+                                            <span className="text-sm font-mono font-black text-rose-700 mt-1">{formatCentavos(valorAbertoExibicao)}</span>
                                         </div>
                                     </div>
                                 </div>

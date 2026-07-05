@@ -35,6 +35,8 @@ export type ClienteCompletudeInput = {
   endereco_logradouro?: string | null;
   endereco_numero?: string | null;
   endereco_bairro?: string | null;
+  endereco_quadra?: string | null;
+  endereco_lote?: string | null;
   endereco_cidade?: string | null;
   endereco_estado?: string | null;
   usa_endereco_residencial_cobranca?: boolean | null;
@@ -42,6 +44,8 @@ export type ClienteCompletudeInput = {
   endereco_cob_logradouro?: string | null;
   endereco_cob_numero?: string | null;
   endereco_cob_bairro?: string | null;
+  endereco_cob_quadra?: string | null;
+  endereco_cob_lote?: string | null;
   endereco_cob_cidade?: string | null;
   endereco_cob_uf?: string | null;
   origem_canal?: string | null;

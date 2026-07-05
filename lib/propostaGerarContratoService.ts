@@ -208,6 +208,8 @@ async function resolverOuCriarCliente(
     endereco_logradouro: endRes.logradouro || proposta.endereco_residencia || 'Não informado',
     endereco_numero: endRes.numero || 'S/N',
     endereco_bairro: endRes.bairro || '—',
+    endereco_quadra: endRes.quadra || null,
+    endereco_lote: endRes.lote || null,
     endereco_cidade: proposta.endereco_cidade || '—',
     endereco_estado: resolverUfParaSelect(proposta.endereco_uf) || 'GO',
     status: 'ativo',
@@ -228,6 +230,8 @@ async function resolverOuCriarCliente(
     payload.endereco_cob_logradouro = endCob.logradouro || proposta.cobrador_endereco_entrega || 'Não informado';
     payload.endereco_cob_numero = endCob.numero || 'S/N';
     payload.endereco_cob_bairro = endCob.bairro || '—';
+    payload.endereco_cob_quadra = endCob.quadra || null;
+    payload.endereco_cob_lote = endCob.lote || null;
     payload.endereco_cob_cidade = proposta.cobrador_endereco_cidade || proposta.endereco_cidade;
     payload.endereco_cob_uf =
       resolverUfParaSelect(proposta.cobrador_endereco_uf) ||

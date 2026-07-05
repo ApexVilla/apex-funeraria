@@ -20,6 +20,7 @@ import {
 } from '../../lib/cobradorDisponiveis';
 import { atribuirClienteCarteiraEscritorio } from '../../lib/carteiraEscritorio';
 import { cobradorOpcoesComEscritorio, isCobradorEscritorio } from '../../lib/cobradorEscritorio';
+import { clienteEhFuncionario } from '../../lib/clienteFuncionario';
 
 const PAGE_SIZE_OPTIONS = [20, 50, 100, 500, 1000, 5000] as const;
 
@@ -688,6 +689,11 @@ export const CarteiraCobrador: React.FC = () => {
                                         <div className="min-w-0 flex-1">
                                             <span className="font-mono text-xs text-gray-500">{c.codigo || '—'}</span>
                                             <span className="ml-2 font-medium text-gray-900">{c.nome}</span>
+                                            {clienteEhFuncionario(c) ? (
+                                                <span className="ml-2 inline-flex rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-indigo-800">
+                                                    Funcionário
+                                                </span>
+                                            ) : null}
                                             {clienteTemOutroCobrador(c.id) ? (
                                                 <span className="block text-[10px] text-amber-800 mt-0.5">
                                                     Cobrador atual:{' '}

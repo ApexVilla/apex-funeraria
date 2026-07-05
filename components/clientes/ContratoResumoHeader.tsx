@@ -1,6 +1,7 @@
 import React from 'react';
 import type { AssinaturaSB, ClienteSB } from '../../lib/ClienteStore';
 import { formatarDataIsoPtBr } from '../../lib/contratoDatas';
+import { rotuloQuadraLote } from '../../lib/clienteEndereco';
 import { resolvePlanoContratoAssinatura } from '../../lib/ContratoAssinaturaService';
 import { StatusBadge } from '../common/StatusBadge';
 
@@ -29,11 +30,19 @@ export const ContratoResumoHeader: React.FC<Props> = ({ cliente, assinatura }) =
 
   const formaPagamento = (assinatura?.forma_pagamento || '—').replace(/_/g, ' ');
 
+  const usaResCob = cliente.usa_endereco_residencial_cobranca !== false;
+  const quadraCob = usaResCob ? cliente.endereco_quadra : cliente.endereco_cob_quadra;
+  const loteCob = usaResCob ? cliente.endereco_lote : cliente.endereco_cob_lote;
+  const quadraLoteCob = rotuloQuadraLote(quadraCob, loteCob);
+
   const linha1: CampoResumo[] = [
     { label: 'Tipo de plano', valor: plano?.label || assinatura?.plano_nome || '—' },
     { label: 'Modelo contrato', valor: plano?.sigla || '—' },
     { label: 'Cidade', valor: cliente.endereco_cidade || '—' },
     { label: 'Bairro', valor: cliente.endereco_bairro || '—' },
+    ...(quadraLoteCob
+      ? [{ label: 'Quadra / Lote (cob.)', valor: quadraLoteCob }]
+      : []),
     { label: 'Fone', valor: cliente.telefone_principal || cliente.celular || cliente.whatsapp || '—' },
     { label: 'Cobrança', valor: formaPagamento },
   ];

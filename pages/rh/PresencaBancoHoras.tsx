@@ -26,6 +26,7 @@ import {
   calcularTrabalhadoMinutosColaborador,
   labelRegimePonto,
   normalizarBatidasAfdDia,
+  temIntervaloExplicitoEntradaSaida,
   usaPontoApenasEntradaSaida,
 } from '../../lib/pontoRules';
 import {
@@ -412,7 +413,7 @@ export const PresencaBancoHoras: React.FC = () => {
 
         const batidasDia = registrosConsolidados[dia] || [];
         const temBatida = batidasDia.length > 0;
-        const trabalhadoNoDia = calcularTrabalhadoMinutosColaborador(batidasDia, colab.role, dia);
+        const trabalhadoNoDia = calcularTrabalhadoMinutosColaborador(batidasDia, colab.role, dia, colab.permissoes);
         const metaNoDia = metaMinutosNoDia(colabConfig, dia, temBatida, feriadosColab, feriasColab);
         const contaNoSaldo = diaFechadoParaSaldoMensal(dia, hojeStr, batidasDia, colab.role);
 
@@ -428,7 +429,7 @@ export const PresencaBancoHoras: React.FC = () => {
 
       // Calcular status de HOJE
       const batidasHoje = registrosConsolidados[hojeStr] || [];
-      const trabalhadoHoje = calcularTrabalhadoMinutosColaborador(batidasHoje, colab.role, hojeStr);
+      const trabalhadoHoje = calcularTrabalhadoMinutosColaborador(batidasHoje, colab.role, hojeStr, colab.permissoes);
 
       let statusHoje: StatusHoje = 'ausente';
       const diaSemanaHoje = new Date(`${hojeStr}T12:00:00`).getDay();
@@ -631,7 +632,7 @@ export const PresencaBancoHoras: React.FC = () => {
       for (const item of colabData) {
         const batidasDia = item.registrosConsolidados[dia] || [];
         const temBatida = batidasDia.length > 0;
-        const trabalhado = calcularTrabalhadoMinutosColaborador(batidasDia, item.colab.role, dia);
+        const trabalhado = calcularTrabalhadoMinutosColaborador(batidasDia, item.colab.role, dia, item.colab.permissoes);
         const meta = metaMinutosNoDia(item.colabConfig, dia, temBatida, item.feriadosColab, item.feriasColab);
 
         totalMetaMinutos += meta;
@@ -744,7 +745,12 @@ export const PresencaBancoHoras: React.FC = () => {
 
     return diasDoMes.map((dia) => {
       const batidas = registrosConsolidados[dia] || [];
-      const trabalhado = calcularTrabalhadoMinutosColaborador(batidas, selectedColaboradorInfo.colab.role, dia);
+      const trabalhado = calcularTrabalhadoMinutosColaborador(
+        batidas,
+        selectedColaboradorInfo.colab.role,
+        dia,
+        selectedColaboradorInfo.colab.permissoes,
+      );
       const meta = metaMinutosNoDia(colabConfig, dia, batidas.length > 0, feriadosColab, feriasColab);
       const contaSaldo = diaFechadoParaSaldoMensal(
         dia,
@@ -1097,6 +1103,8 @@ export const PresencaBancoHoras: React.FC = () => {
                       const sai = item.batidasHoje.find((b) => b.tipo === 'saida');
 
                       const isPontoEntradaSaida = usaPontoApenasEntradaSaida(item.colab.role);
+                      const exibirIntervaloAfd =
+                        !isPontoEntradaSaida || temIntervaloExplicitoEntradaSaida(item.batidasHoje);
 
                       return (
                         <tr key={item.colab.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-900/30 transition-colors cursor-pointer" onClick={() => setSelectedColabId(item.colab.id)}>
@@ -1137,7 +1145,7 @@ export const PresencaBancoHoras: React.FC = () => {
                                   <span className="px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-150 font-bold dark:bg-indigo-950/30 dark:text-indigo-400 dark:border-indigo-900/30">
                                     Entrada: {formatHoraPunch(ent) || '--:--'}
                                   </span>
-                                  {!isPontoEntradaSaida && (
+                                  {!exibirIntervaloAfd ? null : (
                                     <>
                                       <span className="text-slate-300">|</span>
                                       <span className="px-1.5 py-0.5 rounded bg-amber-55 text-amber-700 border border-amber-150 dark:bg-amber-950/30 dark:text-amber-400 dark:border-amber-900/30">
@@ -1633,11 +1641,20 @@ export const PresencaBancoHoras: React.FC = () => {
           open={Boolean(diaEdicao)}
           onClose={() => setDiaEdicao(null)}
           onSaved={() => setRefreshTick((n) => n + 1)}
+          onPermissoesColaboradorAtualizadas={(perm) => {
+            setColaboradores((prev) =>
+              prev.map((c) =>
+                c.id === selectedColaboradorInfo.colab.id ? { ...c, permissoes: perm } : c,
+              ),
+            );
+            setRefreshTick((n) => n + 1);
+          }}
           empresaId={selectedColaboradorInfo.colab.empresa_id || empresaIdOperacao || ''}
           adminUserId={user?.id || ''}
           colaboradorNome={selectedColaboradorInfo.colab.nome}
           colaboradorId={selectedColaboradorInfo.colab.id}
           colaboradorRole={selectedColaboradorInfo.colab.role}
+          colaboradorPermissoes={selectedColaboradorInfo.colab.permissoes}
           dataISO={diaEdicao}
           batidasDia={selectedColabDaysList.find((d) => d.dia === diaEdicao)?.batidas || []}
         />

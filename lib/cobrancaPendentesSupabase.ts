@@ -1,5 +1,6 @@
 import { dataHojeIsoLocal } from './contratoDatas';
 import { supabase } from './supabase';
+import { normalizarFormaPagamentoRecebimentoCampo } from './cobRecebimentosSupabase';
 import { mesReferenciaCurto, resolverValorMensalPlanoCentavos } from './cobrancaParcelaUi';
 import {
   ocultarPendenciasPlaceholderDuplicadas,
@@ -45,6 +46,15 @@ export type CobrancaPendenteDto = {
   ultima_visita?: string;
   observacao?: string;
   tentativas: number;
+  cliente_endereco_logradouro?: string;
+  cliente_endereco_numero?: string;
+  cliente_endereco_complemento?: string;
+  cliente_endereco_bairro?: string;
+  cliente_endereco_cep?: string;
+  cliente_endereco_quadra?: string;
+  cliente_endereco_lote?: string;
+  cliente_endereco_cidade?: string;
+  cliente_endereco_uf?: string;
 };
 
 const UUID_RE =
@@ -106,6 +116,27 @@ function bairroCliente(cli: Record<string, unknown> | null): string {
   return cob || pad || 'Sem bairro';
 }
 
+function calcularDiasAtraso(
+  dataVencimento: string,
+  diasAtrasoAtual: unknown,
+  statusFinanceiro?: unknown,
+): number {
+  const atual = Number(diasAtrasoAtual || 0);
+  const venc = String(dataVencimento || '').slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(venc)) return Math.max(0, atual);
+
+  const status = trimOrEmpty(statusFinanceiro).toLowerCase();
+  if (status === 'pago' || status === 'cancelado') return 0;
+
+  const hoje = dataHojeIsoLocal();
+  if (venc >= hoje) return 0;
+
+  const diff = Math.floor(
+    (new Date(`${hoje}T12:00:00`).getTime() - new Date(`${venc}T12:00:00`).getTime()) / 86400000,
+  );
+  return Math.max(0, atual, diff);
+}
+
 function mapRow(item: Record<string, unknown>): CobrancaPendenteDto {
   const cli = item.clientes as Record<string, unknown> | null;
   const fr = item.fin_contas_receber as Record<string, unknown> | null;
@@ -113,8 +144,12 @@ function mapRow(item: Record<string, unknown>): CobrancaPendenteDto {
   const plano = ass?.planos as { nome?: string; valor_mensal_centavos?: number } | null;
   const cob = item.cobradores as { nome?: string } | null;
   const cobradorId = trimOrEmpty(item.cobrador_id);
-  const dataVenc = String(item.data_vencimento || fr?.data_vencimento || new Date().toISOString().slice(0, 10));
-  const valorTitulo = Number(item.valor_centavos || 0);
+  const dataVenc = String(fr?.data_vencimento || item.data_vencimento || new Date().toISOString().slice(0, 10));
+  const valorAbertoFinanceiro = Number(fr?.valor_aberto_centavos);
+  const valorTitulo =
+    Number.isFinite(valorAbertoFinanceiro) && valorAbertoFinanceiro > 0
+      ? valorAbertoFinanceiro
+      : Number(item.valor_centavos || 0);
   const valorPlanoCentavos = resolverValorMensalPlanoCentavos({
     valor_mensal_assinatura: ass?.valor_mensal_centavos as number | undefined,
     valor_mensal_plano: plano?.valor_mensal_centavos,
@@ -123,6 +158,18 @@ function mapRow(item: Record<string, unknown>): CobrancaPendenteDto {
   const planoNome = trimOrEmpty(plano?.nome) || '-';
   const parcelaNumero = Number(fr?.parcela_numero || 0) || 0;
   const totalParcelas = fr?.total_parcelas ? Number(fr.total_parcelas) : undefined;
+  const diasAtraso = calcularDiasAtraso(dataVenc, item.dias_atraso, fr?.status);
+
+  const usaRes = cli?.usa_endereco_residencial_cobranca !== false;
+  const logradouro = usaRes ? cli?.endereco_logradouro : (cli?.endereco_cob_logradouro || cli?.endereco_logradouro);
+  const numero = usaRes ? cli?.endereco_numero : (cli?.endereco_cob_numero || cli?.endereco_numero);
+  const complemento = usaRes ? cli?.endereco_complemento : (cli?.endereco_cob_complemento || cli?.endereco_complemento);
+  const bairro = usaRes ? cli?.endereco_bairro : (cli?.endereco_cob_bairro || cli?.endereco_bairro);
+  const cep = usaRes ? cli?.endereco_cep : (cli?.endereco_cob_cep || cli?.endereco_cep);
+  const quadra = usaRes ? cli?.endereco_quadra : (cli?.endereco_cob_quadra || cli?.endereco_quadra);
+  const lote = usaRes ? cli?.endereco_lote : (cli?.endereco_cob_lote || cli?.endereco_lote);
+  const cidade = usaRes ? cli?.endereco_cidade : (cli?.endereco_cob_cidade || cli?.endereco_cidade);
+  const uf = usaRes ? cli?.endereco_estado : (cli?.endereco_cob_uf || cli?.endereco_estado);
 
   return {
     id: String(item.id),
@@ -145,12 +192,21 @@ function mapRow(item: Record<string, unknown>): CobrancaPendenteDto {
     valor_plano_centavos: valorPlanoCentavos,
     valor_centavos: valorTitulo,
     data_vencimento: dataVenc.slice(0, 10),
-    dias_atraso: Number(item.dias_atraso || 0),
+    dias_atraso: diasAtraso,
     status: (item.status as StatusCobrancaPendente) || 'pendente',
     prioridade: (item.prioridade as PrioridadeCobrancaPendente) || 'media',
     ultima_visita: item.ultima_visita ? String(item.ultima_visita) : undefined,
     observacao: item.observacao ? String(item.observacao) : undefined,
     tentativas: Number(item.tentativas || 0),
+    cliente_endereco_logradouro: trimOrEmpty(logradouro),
+    cliente_endereco_numero: trimOrEmpty(numero),
+    cliente_endereco_complemento: trimOrEmpty(complemento),
+    cliente_endereco_bairro: trimOrEmpty(bairro),
+    cliente_endereco_cep: trimOrEmpty(cep),
+    cliente_endereco_quadra: trimOrEmpty(quadra),
+    cliente_endereco_lote: trimOrEmpty(lote),
+    cliente_endereco_cidade: trimOrEmpty(cidade),
+    cliente_endereco_uf: trimOrEmpty(uf),
   };
 }
 
@@ -345,8 +401,16 @@ export async function carregarCobrancasPendentes(
       data_vencimento, dias_atraso, status, prioridade, tentativas, ultima_visita, observacao,
       clientes (
         nome, cpf, telefone_principal,
+        usa_endereco_residencial_cobranca,
         endereco_cob_logradouro, endereco_logradouro,
-        endereco_cob_bairro, endereco_bairro
+        endereco_cob_numero, endereco_numero,
+        endereco_cob_complemento, endereco_complemento,
+        endereco_cob_bairro, endereco_bairro,
+        endereco_cob_cep, endereco_cep,
+        endereco_cob_quadra, endereco_quadra,
+        endereco_cob_lote, endereco_lote,
+        endereco_cob_cidade, endereco_cidade,
+        endereco_cob_uf, endereco_estado
       ),
       fin_contas_receber (
         codigo,
@@ -532,6 +596,7 @@ export async function registrarRecebimentoCampo(
   }
 
   const dataRecebimento = (params.data_pagamento || '').slice(0, 10) || dataHojeIsoLocal();
+  const formaRecebimento = normalizarFormaPagamentoRecebimentoCampo(params.forma_pagamento);
   const { error: insErr } = await supabase.from('cob_recebimentos_campo').insert({
     empresa_id: params.empresa_id,
     cobranca_pendente_id: params.cobranca_pendente_id,
@@ -540,7 +605,7 @@ export async function registrarRecebimentoCampo(
     cobrador_id: params.cobrador_id,
     data: dataRecebimento,
     valor_centavos: params.valor_centavos,
-    forma_pagamento: params.forma_pagamento,
+    forma_pagamento: formaRecebimento,
     status: 'confirmado',
     observacao: params.observacao?.trim() || null,
     created_by: params.created_by || null,

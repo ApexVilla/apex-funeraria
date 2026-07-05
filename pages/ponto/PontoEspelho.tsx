@@ -14,12 +14,14 @@ import {
   calcularTrabalhadoMinutosColaborador,
   diaFechadoParaSaldoMensal,
   getUserPontoConfig,
-  INTERVALO_ALMOCO_IMPLICITO_ENTRADA_SAIDA_MINUTOS,
+  intervaloAlmocoImplicitoEntradaSaidaMinutos,
   intervaloAlmocoImplicitoMinutosNoDia,
+  labelIntervaloAlmocoImplicitoDeclaracao,
   jornadaPontoFinalizada,
   labelRegimePonto,
   normalizarBatidasAfdDia,
   normalizarBatidasEntradaSaida,
+  resolverIntervaloEntradaSaidaColaborador,
   usaPontoApenasEntradaSaida,
 } from '../../lib/pontoRules';
 import {
@@ -64,6 +66,7 @@ import {
   normalizarOrigemBatidaPonto,
 } from '../../lib/pontoUtils';
 import { EditarDiaPontoModal } from './EditarDiaPontoModal';
+import { ConfigurarIntervaloColaboradorModal } from './ConfigurarIntervaloColaboradorModal';
 import {
   isDiaAtestado,
   isDiaFolgaManual,
@@ -505,6 +508,7 @@ export const PontoEspelho: React.FC<PontoEspelhoProps> = ({ modoRH = false }) =>
 
   const [visualizarFoto, setVisualizarFoto] = useState<{ url: string; tipo: string; dia: string } | null>(null);
   const [diaEmEdicao, setDiaEmEdicao] = useState<string | null>(null);
+  const [intervaloModalAberto, setIntervaloModalAberto] = useState(false);
 
   const registrosConsolidados = useMemo(
     () => consolidarEPrepararBatidasEspelho(registrosPorDia, diasDoMes, opcoesConsolidacao),
@@ -585,7 +589,12 @@ export const PontoEspelho: React.FC<PontoEspelhoProps> = ({ modoRH = false }) =>
       const horaExtraManual = ocorrencia?.tipo === 'hora_extra';
 
       const justificado = folgaManual || bonificacaoManual || atestado || feriadoManual || horaExtraManual;
-      const minutosTrabalhadosDia = calcularTrabalhadoMinutosColaborador(batidas, colaboradorAtual?.role, dia);
+      const minutosTrabalhadosDia = calcularTrabalhadoMinutosColaborador(
+        batidas,
+        colaboradorAtual?.role,
+        dia,
+        colaboradorAtual?.permissoes,
+      );
       const temBatida = batidas.length > 0;
       
       let metaDia = metaMinutosNoDia(pontoConfig, dia, temBatida, feriadosColaborador, feriasColaborador);
@@ -659,7 +668,12 @@ export const PontoEspelho: React.FC<PontoEspelhoProps> = ({ modoRH = false }) =>
     return diasDoMes.map((dia) => {
       const batidas = registrosConsolidados[dia] || [];
       const temBatida = batidas.length > 0;
-      const trabalhadoMinutos = calcularTrabalhadoMinutosColaborador(batidas, colaboradorAtual?.role, dia);
+      const trabalhadoMinutos = calcularTrabalhadoMinutosColaborador(
+        batidas,
+        colaboradorAtual?.role,
+        dia,
+        colaboradorAtual?.permissoes,
+      );
       const metaMinutos = metaMinutosNoDia(pontoConfig, dia, temBatida, feriadosColaborador, feriasColaborador);
       const diaFormatado = dia.slice(8);
 
@@ -765,9 +779,19 @@ export const PontoEspelho: React.FC<PontoEspelhoProps> = ({ modoRH = false }) =>
                 const diaNum = dia.slice(8);
                 const diaSem = diaSemanaAbrev(dia);
 
-                const minutostrab = calcularTrabalhadoMinutosColaborador(batidas, colaboradorAtual?.role, dia);
+                const minutostrab = calcularTrabalhadoMinutosColaborador(
+                  batidas,
+                  colaboradorAtual?.role,
+                  dia,
+                  colaboradorAtual?.permissoes,
+                );
                 const intervaloMin = calcularIntervaloMinutos(batidas);
-                const intervaloImplicitoMin = intervaloAlmocoImplicitoMinutosNoDia(batidas, colaboradorAtual?.role, dia);
+                const intervaloImplicitoMin = intervaloAlmocoImplicitoMinutosNoDia(
+                  batidas,
+                  colaboradorAtual?.role,
+                  dia,
+                  colaboradorAtual?.permissoes,
+                );
                 const sabadoDia = isSabadoLocal(dia);
                 const temBatida = batidas.length > 0;
                 
@@ -920,8 +944,18 @@ export const PontoEspelho: React.FC<PontoEspelhoProps> = ({ modoRH = false }) =>
                     <td className="px-2 py-2 text-center font-mono text-gray-700 border border-slate-200 tabular-nums print:px-1.5 print:py-0.5 print:leading-none">{renderBatidasTipoCell(batidasLinha, 'saida', dia)}</td>
                     {espelhoEntradaSaida && (
                       <td className="px-2 py-2 text-center font-mono text-gray-600 border border-slate-200 tabular-nums print:px-1.5 print:py-0.5 print:leading-none">
-                        {intervaloImplicitoMin > 0 ? (
-                          <span className="text-amber-800 font-semibold" title="Intervalo de 2h descontado do total trabalhado (dias úteis)">
+                        {intervaloMin > 0 ? (
+                          <span
+                            className="text-slate-700 font-semibold"
+                            title="Intervalo informado no ajuste manual"
+                          >
+                            {formatarDuracaoPonto(intervaloMin)}
+                          </span>
+                        ) : intervaloImplicitoMin > 0 ? (
+                          <span
+                            className="text-amber-800 font-semibold"
+                            title={`Intervalo de ${formatarDuracaoPonto(intervaloImplicitoMin)} descontado do total trabalhado (dias úteis)`}
+                          >
                             {formatarDuracaoPonto(intervaloImplicitoMin)}†
                           </span>
                         ) : sabadoDia && temBatida && jornadaFechada ? (
@@ -1176,6 +1210,13 @@ export const PontoEspelho: React.FC<PontoEspelhoProps> = ({ modoRH = false }) =>
                   <h2 className="font-semibold text-lg truncate">{colaboradorAtual.nome || 'Colaborador'}</h2>
                   <p className="text-sm text-white/70">
                     {colaboradorAtual.role || 'Sem cargo'} &middot; {labelRegimePonto(pontoConfig.regime)}
+                    {espelhoEntradaSaida && (() => {
+                      const iv = resolverIntervaloEntradaSaidaColaborador(
+                        colaboradorAtual?.role,
+                        colaboradorAtual?.permissoes,
+                      );
+                      return ` · Intervalo: ${iv.ativo ? formatarDuracaoPonto(iv.minutos) : 'desativado'}`;
+                    })()}
                     {isRegime12x36(pontoConfig)
                       ? ' · Meta 12h nos dias com batida de ponto'
                       : temEscalaSabadoAlternado(pontoConfig)
@@ -1186,9 +1227,21 @@ export const PontoEspelho: React.FC<PontoEspelhoProps> = ({ modoRH = false }) =>
                   </p>
                 </div>
               </div>
-              <div className="text-right hidden sm:block shrink-0">
-                <p className="text-sm text-white/60">Período</p>
-                <p className="font-semibold capitalize">{nomeMes}</p>
+              <div className="flex items-center gap-4 shrink-0">
+                {espelhoEntradaSaida && podeEditarFolha && (
+                  <button
+                    type="button"
+                    onClick={() => setIntervaloModalAberto(true)}
+                    className="flex items-center gap-1.5 rounded-lg border border-white/30 bg-white/10 px-3 py-1.5 text-xs font-semibold text-white hover:bg-white/20 transition-colors print:hidden"
+                  >
+                    <Coffee className="h-3.5 w-3.5" />
+                    Intervalo de almoço
+                  </button>
+                )}
+                <div className="text-right hidden sm:block">
+                  <p className="text-sm text-white/60">Período</p>
+                  <p className="font-semibold capitalize">{nomeMes}</p>
+                </div>
               </div>
             </div>
           </div>
@@ -1318,8 +1371,15 @@ export const PontoEspelho: React.FC<PontoEspelhoProps> = ({ modoRH = false }) =>
             {espelhoEntradaSaida && (
               <p className="text-xs text-slate-600 print:text-[7px] print:text-gray-800 print:leading-snug print:mb-1">
                 <span className="font-semibold text-slate-800">†</span> = intervalo intrajornada de{' '}
-                {formatarDuracaoPonto(INTERVALO_ALMOCO_IMPLICITO_ENTRADA_SAIDA_MINUTOS)} pré-assinalado no sistema.
+                {formatarDuracaoPonto(
+                  intervaloAlmocoImplicitoEntradaSaidaMinutos(
+                    colaboradorAtual?.role,
+                    colaboradorAtual?.permissoes,
+                  ),
+                )}{' '}
+                pré-assinalado no sistema.
                 Este cargo registra apenas entrada e saída; o intervalo não é batido no ponto eletrônico.
+                Configure 1h, 2h ou desative na aba <strong>Intervalo</strong> do ajuste manual (lápis).
               </p>
             )}
             </div>
@@ -1424,7 +1484,13 @@ export const PontoEspelho: React.FC<PontoEspelhoProps> = ({ modoRH = false }) =>
                 <strong>{cargoColaboradorLabel}</strong>, vinculado(a) à empresa <strong>{nomeEmpresaFolha}</strong>,
                 declara que o controle de frequência é realizado mediante registro exclusivo dos horários de entrada
                 e saída da jornada de trabalho, sendo o intervalo intrajornada de{' '}
-                <strong>2 (duas) horas</strong> previamente assinalado no sistema eletrônico de ponto, na forma
+                <strong>
+                  {labelIntervaloAlmocoImplicitoDeclaracao(
+                    colaboradorAtual?.role,
+                    colaboradorAtual?.permissoes,
+                  )}
+                </strong>{' '}
+                previamente assinalado no sistema eletrônico de ponto, na forma
                 autorizada pela legislação trabalhista vigente.
               </p>
               <p className="mt-1">
@@ -1522,14 +1588,38 @@ export const PontoEspelho: React.FC<PontoEspelhoProps> = ({ modoRH = false }) =>
           open={Boolean(diaEmEdicao)}
           onClose={() => setDiaEmEdicao(null)}
           onSaved={() => setRefreshTick((n) => n + 1)}
+          onPermissoesColaboradorAtualizadas={(perm) => {
+            setColaboradores((prev) =>
+              prev.map((c) => (c.id === colabSelecionado ? { ...c, permissoes: perm } : c)),
+            );
+            setRefreshTick((n) => n + 1);
+          }}
           empresaId={empresaColaborador}
           adminUserId={user.id}
           colaboradorNome={colaboradorAtual.nome || colaboradorAtual.email}
           colaboradorId={colabSelecionado}
           colaboradorRole={colaboradorAtual?.role}
+          colaboradorPermissoes={colaboradorAtual?.permissoes}
           dataISO={diaEmEdicao}
           batidasDia={registrosConsolidados[diaEmEdicao] || []}
           ocorrenciaDia={ocorrenciasPorDia[diaEmEdicao] || null}
+        />
+      )}
+
+      {podeEditarFolha && colaboradorAtual && (
+        <ConfigurarIntervaloColaboradorModal
+          open={intervaloModalAberto}
+          onClose={() => setIntervaloModalAberto(false)}
+          onSaved={(perm) => {
+            setColaboradores((prev) =>
+              prev.map((c) => (c.id === colabSelecionado ? { ...c, permissoes: perm } : c)),
+            );
+            setRefreshTick((n) => n + 1);
+          }}
+          colaboradorId={colabSelecionado}
+          colaboradorNome={colaboradorAtual.nome || colaboradorAtual.email}
+          colaboradorRole={colaboradorAtual?.role}
+          colaboradorPermissoes={colaboradorAtual?.permissoes}
         />
       )}
 

@@ -103,7 +103,8 @@ export function filtrarLinhasDREDrilldown(
         return recebiveis
             .filter((r) => {
                 if (!empresaOk(r.empresa_id, empresaIds)) return false;
-                if (!noPeriodo(r.data_competencia, periodo.inicio, periodo.fim)) return false;
+                const dataReferencia = r.data_pagamento || r.data_competencia;
+                if (!noPeriodo(dataReferencia, periodo.inicio, periodo.fim)) return false;
                 const cat = categorizarReceitaPorTexto(r.tipo_documento || r.descricao || '');
                 return cat === ctx.categoria;
             })

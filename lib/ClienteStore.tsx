@@ -91,6 +91,8 @@ export interface ClienteSB {
     endereco_numero: string;
     endereco_complemento?: string;
     endereco_bairro: string;
+    endereco_quadra?: string;
+    endereco_lote?: string;
     endereco_cidade: string;
     endereco_estado: string;
     endereco_pais?: string;
@@ -112,6 +114,8 @@ export interface ClienteSB {
     endereco_cob_numero?: string;
     endereco_cob_complemento?: string;
     endereco_cob_bairro?: string;
+    endereco_cob_quadra?: string;
+    endereco_cob_lote?: string;
     endereco_cob_cidade?: string;
     endereco_cob_uf?: string;
     // CRM

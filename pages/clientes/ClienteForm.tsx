@@ -19,6 +19,11 @@ import { validarBeneficiariosOpcionais } from '../../lib/beneficiarioValidacaoCl
 import { BeneficiarioCarenciaPreview } from '../../components/clientes/BeneficiarioCarenciaInfo';
 import { BeneficiariosCadastroTabela } from '../../components/clientes/BeneficiariosCadastroTabela';
 import { ParentescoDependenteSelect } from '../../components/clientes/ParentescoDependenteSelect';
+import { Badge } from '../../components/ui/Components';
+import {
+  clienteEhFuncionario,
+  mergeCamposPersonalizadosFuncionario,
+} from '../../lib/clienteFuncionario';
 import { normalizarParentescoDependente } from '../../lib/parentescoDependente';
 import {
   aplicarCarenciaBeneficiarioPayload,
@@ -148,7 +153,30 @@ export const ClienteForm: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const cepAbortController = useRef<AbortController | null>(null);
   const submitIntentRef = useRef(false);
-  const [step, setStep] = useState(1);
+
+  const queryStep = useMemo(() => {
+    const s = new URLSearchParams(location.search).get('step') || new URLSearchParams(location.search).get('passo');
+    if (s) {
+      const parsed = parseInt(s, 10);
+      if (Number.isFinite(parsed) && parsed >= 1) return parsed;
+    }
+    return null;
+  }, [location.search]);
+
+  const [step, setStep] = useState(() => {
+    const s = new URLSearchParams(window.location.search).get('step') || new URLSearchParams(window.location.search).get('passo');
+    if (s) {
+      const parsed = parseInt(s, 10);
+      if (Number.isFinite(parsed) && parsed >= 1) return parsed;
+    }
+    return 1;
+  });
+
+  useEffect(() => {
+    if (queryStep !== null) {
+      setStep(queryStep);
+    }
+  }, [queryStep]);
   const [criarContratoAgora, setCriarContratoAgora] = useState(false);
   const incluiContratoNoCadastro = !isEdit && !isContractFlow && criarContratoAgora;
   const stepLabels = useMemo(() => {
@@ -183,6 +211,7 @@ export const ClienteForm: React.FC = () => {
   );
   const [clienteSelecionadoId, setClienteSelecionadoId] = useState<string>('');
   const [loadingClienteContrato, setLoadingClienteContrato] = useState(false);
+  const [camposPersonalizadosBase, setCamposPersonalizadosBase] = useState<Record<string, unknown>>({});
   const draftRestoredRef = useRef(false);
   const beneficiariosOriginaisRef = useRef<string[]>([]);
   const clienteContratoLoadRef = useRef(0);
@@ -205,15 +234,18 @@ export const ClienteForm: React.FC = () => {
     cadastro_migracao: false,
     // Endereço
     endereco_cep: '', endereco_logradouro: '', endereco_numero: '',
-    endereco_complemento: '', endereco_bairro: '', endereco_cidade: '', endereco_estado: '',
+    endereco_complemento: '', endereco_bairro: '', endereco_quadra: '', endereco_lote: '', endereco_cidade: '', endereco_estado: '',
+    endereco_por_quadra_lote: false,
     // Endereço de Cobrança
     usa_endereco_residencial_cobranca: true,
     endereco_cob_cep: '', endereco_cob_logradouro: '', endereco_cob_numero: '',
-    endereco_cob_complemento: '', endereco_cob_bairro: '', endereco_cob_cidade: '', endereco_cob_estado: '',
+    endereco_cob_complemento: '', endereco_cob_bairro: '', endereco_cob_quadra: '', endereco_cob_lote: '', endereco_cob_cidade: '', endereco_cob_estado: '',
+    endereco_cob_por_quadra_lote: false,
     // Dados comerciais internos
     tipo_cliente: 'titular',
     nivel_relacionamento: 'regular', origem_canal: '', tipo_vendedor: '', vendedor_id: '',
     cliente_vip: false,
+    eh_funcionario: false,
     // Financeiro
     forma_pagamento_preferencial: '',
     cobrador_id: '',
@@ -370,6 +402,7 @@ export const ClienteForm: React.FC = () => {
     if (!window.confirm('Descartar o rascunho deste cadastro? Os dados preenchidos serão apagados.')) return;
     sessionStorage.removeItem(draftKey);
     setRascunhoSalvoEm(null);
+    setCamposPersonalizadosBase({});
     setCriarContratoAgora(false);
     setStep(1);
     setClienteBusca('');
@@ -381,13 +414,16 @@ export const ClienteForm: React.FC = () => {
       profissao: '', nome_mae: '', nome_pai: '',
       cadastro_migracao: false,
       endereco_cep: '', endereco_logradouro: '', endereco_numero: '',
-      endereco_complemento: '', endereco_bairro: '', endereco_cidade: '', endereco_estado: '',
+      endereco_complemento: '', endereco_bairro: '', endereco_quadra: '', endereco_lote: '', endereco_cidade: '', endereco_estado: '',
+    endereco_por_quadra_lote: false,
       usa_endereco_residencial_cobranca: true,
       endereco_cob_cep: '', endereco_cob_logradouro: '', endereco_cob_numero: '',
-      endereco_cob_complemento: '', endereco_cob_bairro: '', endereco_cob_cidade: '', endereco_cob_estado: '',
+      endereco_cob_complemento: '', endereco_cob_bairro: '', endereco_cob_quadra: '', endereco_cob_lote: '', endereco_cob_cidade: '', endereco_cob_estado: '',
+    endereco_cob_por_quadra_lote: false,
       tipo_cliente: 'titular',
       nivel_relacionamento: 'regular', origem_canal: '', tipo_vendedor: '', vendedor_id: '',
       cliente_vip: false,
+      eh_funcionario: false,
       forma_pagamento_preferencial: '',
     cobrador_id: '',
       observacoes: '',
@@ -577,6 +613,11 @@ export const ClienteForm: React.FC = () => {
         diaVencimentoPreferido: c.dia_vencimento_preferido,
       });
 
+      setCamposPersonalizadosBase(
+        c.campos_personalizados && typeof c.campos_personalizados === 'object'
+          ? (c.campos_personalizados as Record<string, unknown>)
+          : {},
+      );
       setForm({
             nome: c.nome || '',
             nome_social: c.nome_social || '',
@@ -597,6 +638,9 @@ export const ClienteForm: React.FC = () => {
             endereco_numero: c.endereco_numero || '',
             endereco_complemento: c.endereco_complemento || '',
             endereco_bairro: c.endereco_bairro || '',
+            endereco_quadra: c.endereco_quadra || '',
+            endereco_lote: c.endereco_lote || '',
+            endereco_por_quadra_lote: Boolean(c.endereco_quadra || c.endereco_lote),
             endereco_cidade: c.endereco_cidade || '',
             endereco_estado: resolverUfParaSelect(c.endereco_estado),
             usa_endereco_residencial_cobranca: c.usa_endereco_residencial_cobranca !== false,
@@ -605,6 +649,9 @@ export const ClienteForm: React.FC = () => {
             endereco_cob_numero: c.endereco_cob_numero || '',
             endereco_cob_complemento: c.endereco_cob_complemento || '',
             endereco_cob_bairro: c.endereco_cob_bairro || '',
+            endereco_cob_quadra: c.endereco_cob_quadra || '',
+            endereco_cob_lote: c.endereco_cob_lote || '',
+            endereco_cob_por_quadra_lote: Boolean(c.endereco_cob_quadra || c.endereco_cob_lote),
             endereco_cob_cidade: c.endereco_cob_cidade || '',
             endereco_cob_estado: resolverUfParaSelect(c.endereco_cob_uf),
             tipo_cliente: c.tipo_cliente || 'titular',
@@ -616,6 +663,7 @@ export const ClienteForm: React.FC = () => {
                 ? VENDEDOR_ESCRITORIO_ID
                 : c.vendedor_id,
             cliente_vip: c.cliente_vip || false,
+            eh_funcionario: clienteEhFuncionario(c),
             forma_pagamento_preferencial: c.forma_pagamento_preferencial || '',
             cobrador_id: cobradorId,
             observacoes: '',
@@ -852,6 +900,8 @@ export const ClienteForm: React.FC = () => {
         endereco_logradouro: form.endereco_logradouro,
         endereco_numero: form.endereco_numero,
         endereco_bairro: form.endereco_bairro,
+        endereco_quadra: form.endereco_quadra,
+        endereco_lote: form.endereco_lote,
         endereco_cidade: form.endereco_cidade,
         endereco_estado: form.endereco_estado,
         usa_endereco_residencial_cobranca: form.usa_endereco_residencial_cobranca,
@@ -1255,6 +1305,9 @@ export const ClienteForm: React.FC = () => {
           endereco_cob_numero: p.endereco_numero,
           endereco_cob_complemento: p.endereco_complemento || '',
           endereco_cob_bairro: p.endereco_bairro,
+          endereco_cob_quadra: p.endereco_quadra,
+          endereco_cob_lote: p.endereco_lote,
+          endereco_cob_por_quadra_lote: p.endereco_por_quadra_lote,
           endereco_cob_cidade: p.endereco_cidade,
           endereco_cob_estado: p.endereco_estado,
         };
@@ -1471,6 +1524,8 @@ export const ClienteForm: React.FC = () => {
       endereco_numero: form.endereco_numero,
       endereco_complemento: form.endereco_complemento || undefined,
       endereco_bairro: form.endereco_bairro,
+      endereco_quadra: form.endereco_quadra.trim() || undefined,
+      endereco_lote: form.endereco_lote.trim() || undefined,
       endereco_cidade: form.endereco_cidade,
       endereco_estado: form.endereco_estado,
       // Endereço de Cobrança
@@ -1480,6 +1535,12 @@ export const ClienteForm: React.FC = () => {
       endereco_cob_numero: form.usa_endereco_residencial_cobranca ? form.endereco_numero : form.endereco_cob_numero,
       endereco_cob_complemento: form.usa_endereco_residencial_cobranca ? form.endereco_complemento : form.endereco_cob_complemento,
       endereco_cob_bairro: form.usa_endereco_residencial_cobranca ? form.endereco_bairro : form.endereco_cob_bairro,
+      endereco_cob_quadra: form.usa_endereco_residencial_cobranca
+        ? form.endereco_quadra.trim() || undefined
+        : form.endereco_cob_quadra.trim() || undefined,
+      endereco_cob_lote: form.usa_endereco_residencial_cobranca
+        ? form.endereco_lote.trim() || undefined
+        : form.endereco_cob_lote.trim() || undefined,
       endereco_cob_cidade: form.usa_endereco_residencial_cobranca ? form.endereco_cidade : form.endereco_cob_cidade,
       endereco_cob_uf: form.usa_endereco_residencial_cobranca ? form.endereco_estado : form.endereco_cob_estado,
       tipo_cliente: form.tipo_cliente,
@@ -1488,6 +1549,10 @@ export const ClienteForm: React.FC = () => {
       tipo_vendedor: tipoVendedorParaSalvar(form.vendedor_id, form.tipo_vendedor),
       vendedor_id: vendedorIdParaSalvar(form.vendedor_id),
       cliente_vip: form.cliente_vip,
+      campos_personalizados: mergeCamposPersonalizadosFuncionario(
+        camposPersonalizadosBase,
+        form.eh_funcionario,
+      ),
       forma_pagamento_preferencial: form.forma_pagamento_preferencial || undefined,
       cliente_desde: form.data_entrada_cliente || undefined,
       dia_vencimento_preferido: diaVencimentoNum,
@@ -2406,7 +2471,10 @@ export const ClienteForm: React.FC = () => {
                     >
                       <div className="flex items-start justify-between gap-3">
                         <div>
-                          <p className="font-medium text-gray-900 dark:text-slate-100">{c.nome}</p>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <p className="font-medium text-gray-900 dark:text-slate-100">{c.nome}</p>
+                            {clienteEhFuncionario(c) ? <Badge variant="info">Funcionario</Badge> : null}
+                          </div>
                           <p className="text-xs text-gray-500 dark:text-slate-400">{c.cpf || '-'} • {c.email || '-'}</p>
                         </div>
                         <div className="text-right">
@@ -2434,7 +2502,10 @@ export const ClienteForm: React.FC = () => {
               {clienteSelecionado && (
                 <div className="rounded-lg border border-green-200 dark:border-emerald-800/50 bg-green-50 dark:bg-emerald-950/40 p-4 text-sm space-y-2">
                   <p className="font-semibold text-green-800 dark:text-emerald-200">Cliente confirmado</p>
-                  <p className="text-green-700 dark:text-emerald-300">{clienteSelecionado.nome} • {clienteSelecionado.cpf || '-'}</p>
+                  <p className="text-green-700 dark:text-emerald-300 flex items-center gap-2 flex-wrap">
+                    <span>{clienteSelecionado.nome} • {clienteSelecionado.cpf || '-'}</span>
+                    {clienteEhFuncionario(clienteSelecionado) ? <Badge variant="info">Funcionario</Badge> : null}
+                  </p>
                   {loadingClienteContrato ? (
                     <p className="text-green-600 dark:text-emerald-400 text-xs">Carregando dependentes e dados do cadastro...</p>
                   ) : (
@@ -2632,6 +2703,34 @@ export const ClienteForm: React.FC = () => {
               <div className="md:col-span-3">
                 <Input label="Bairro *" name="endereco_bairro" value={form.endereco_bairro} onChange={handleChange} required />
               </div>
+              <div className="md:col-span-6 flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50/80 px-3 py-2">
+                <input
+                  id="endereco-quadra-lote-cliente"
+                  type="checkbox"
+                  className="h-4 w-4 rounded border-amber-400 text-amber-700"
+                  checked={form.endereco_por_quadra_lote}
+                  onChange={(e) =>
+                    setForm((p) => ({
+                      ...p,
+                      endereco_por_quadra_lote: e.target.checked,
+                      ...(!e.target.checked ? { endereco_quadra: '', endereco_lote: '' } : {}),
+                    }))
+                  }
+                />
+                <label htmlFor="endereco-quadra-lote-cliente" className="text-sm text-amber-950 cursor-pointer">
+                  Endereço em <strong>quadra e lote</strong> (loteamento)
+                </label>
+              </div>
+              {form.endereco_por_quadra_lote && (
+                <>
+                  <div className="md:col-span-2">
+                    <Input label="Quadra" name="endereco_quadra" value={form.endereco_quadra} onChange={handleChange} />
+                  </div>
+                  <div className="md:col-span-2">
+                    <Input label="Lote" name="endereco_lote" value={form.endereco_lote} onChange={handleChange} />
+                  </div>
+                </>
+              )}
               <div className="md:col-span-3">
                 <Input label="Cidade *" name="endereco_cidade" value={form.endereco_cidade} onChange={handleChange} required />
               </div>
@@ -2739,6 +2838,34 @@ export const ClienteForm: React.FC = () => {
                   <div className="md:col-span-3">
                     <Input label="Bairro" name="endereco_cob_bairro" value={form.endereco_cob_bairro} onChange={handleChange} />
                   </div>
+                  <div className="md:col-span-6 flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50/80 px-3 py-2">
+                    <input
+                      id="endereco-cob-quadra-lote-cliente"
+                      type="checkbox"
+                      className="h-4 w-4 rounded border-amber-400 text-amber-700"
+                      checked={form.endereco_cob_por_quadra_lote}
+                      onChange={(e) =>
+                        setForm((p) => ({
+                          ...p,
+                          endereco_cob_por_quadra_lote: e.target.checked,
+                          ...(!e.target.checked ? { endereco_cob_quadra: '', endereco_cob_lote: '' } : {}),
+                        }))
+                      }
+                    />
+                    <label htmlFor="endereco-cob-quadra-lote-cliente" className="text-sm text-amber-950 cursor-pointer">
+                      Cobrança em <strong>quadra e lote</strong>
+                    </label>
+                  </div>
+                  {form.endereco_cob_por_quadra_lote && (
+                    <>
+                      <div className="md:col-span-2">
+                        <Input label="Quadra (cob.)" name="endereco_cob_quadra" value={form.endereco_cob_quadra} onChange={handleChange} />
+                      </div>
+                      <div className="md:col-span-2">
+                        <Input label="Lote (cob.)" name="endereco_cob_lote" value={form.endereco_cob_lote} onChange={handleChange} />
+                      </div>
+                    </>
+                  )}
                   <div className="md:col-span-3">
                     <Input label="Cidade" name="endereco_cob_cidade" value={form.endereco_cob_cidade} onChange={handleChange} />
                   </div>
@@ -2947,6 +3074,23 @@ export const ClienteForm: React.FC = () => {
                 <option value="quente">Quente (Quase fechando)</option>
                 <option value="fidelizado">Fidelizado (Cliente antigo)</option>
               </Select>
+              <div className="md:col-span-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-900/40 px-4 py-3">
+                <label className="flex items-start gap-3 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    name="eh_funcionario"
+                    checked={form.eh_funcionario}
+                    onChange={handleChange}
+                    className="mt-0.5 h-4 w-4 rounded border-slate-300 text-slate-700 focus:ring-slate-500"
+                  />
+                  <span className="text-sm leading-snug text-gray-700 dark:text-slate-200">
+                    <strong>Também e funcionario/colaborador</strong>
+                    <span className="block text-xs text-gray-500 dark:text-slate-400 mt-1">
+                      Ative para localizar este cliente mais facil na lista de Clientes e no favorecido do Contas a Pagar.
+                    </span>
+                  </span>
+                </label>
+              </div>
             </div>
           </Card>
         )}

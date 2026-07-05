@@ -1,10 +1,102 @@
 import { supabase } from './supabase';
 import { buscarRecebimentoCampo } from './cobRecebimentosSupabase';
 import {
+  contarReimpressoesRecebimentosCampo,
+  registrarReimpressoesRecebimentosCampo,
+  validarReimpressaoRecebimento,
+} from './cobradorReciboReimpressao';
+import {
   imprimirReciboBaixaCobrador,
   labelFormaPagamentoRecibo,
   type ModoReciboBaixaCobrador,
 } from './ReciboTermicoService';
+
+export type ControleReimpressaoReciboOpts = {
+  cobradorRestrito?: boolean;
+  exigirMotivoAdmin?: boolean;
+  motivoAdmin?: string;
+  usuarioId?: string | null;
+};
+
+type RecebimentoMeta = {
+  id: string;
+  data: string;
+  empresa_id: string;
+};
+
+async function carregarMetasRecebimentos(
+  recebimentoIds: string[],
+  empresaIds: string[],
+): Promise<Map<string, RecebimentoMeta>> {
+  const ids = [...new Set(recebimentoIds.map((id) => id.trim()).filter(Boolean))];
+  const map = new Map<string, RecebimentoMeta>();
+  if (ids.length === 0) return map;
+
+  const empresaSet = [...new Set(empresaIds.map((id) => id.trim()).filter(Boolean))];
+  let q = supabase
+    .from('cob_recebimentos_campo')
+    .select('id, data, empresa_id')
+    .in('id', ids);
+  q = empresaSet.length === 1 ? q.eq('empresa_id', empresaSet[0]) : q.in('empresa_id', empresaSet);
+
+  const { data, error } = await q;
+  if (error) throw error;
+
+  for (const row of data || []) {
+    const id = String(row.id || '');
+    if (!id) continue;
+    map.set(id, {
+      id,
+      data: String(row.data || '').slice(0, 10),
+      empresa_id: String(row.empresa_id || ''),
+    });
+  }
+  return map;
+}
+
+async function validarReimpressoesAntes(
+  recebimentoIds: string[],
+  empresaIds: string[],
+  opts?: ControleReimpressaoReciboOpts,
+): Promise<Map<string, RecebimentoMeta>> {
+  const metas = await carregarMetasRecebimentos(recebimentoIds, empresaIds);
+  const counts = await contarReimpressoesRecebimentosCampo(recebimentoIds);
+
+  for (const id of recebimentoIds) {
+    const meta = metas.get(id);
+    if (!meta) throw new Error('Recebimento não encontrado.');
+    validarReimpressaoRecebimento({
+      data_recebimento: meta.data,
+      reimpressoes_count: counts.get(id) || 0,
+      cobrador_restrito: opts?.cobradorRestrito === true,
+      exigir_motivo_admin: opts?.exigirMotivoAdmin === true,
+      motivo_admin: opts?.motivoAdmin,
+    });
+  }
+  return metas;
+}
+
+async function registrarLogsReimpressao(
+  recebimentoIds: string[],
+  metas: Map<string, RecebimentoMeta>,
+  modo: ModoReciboBaixaCobrador,
+  opts?: ControleReimpressaoReciboOpts,
+): Promise<void> {
+  await registrarReimpressoesRecebimentosCampo(
+    recebimentoIds.map((id) => {
+      const meta = metas.get(id);
+      if (!meta?.empresa_id) throw new Error('Recebimento sem empresa vinculada.');
+      return {
+        recebimento_id: id,
+        empresa_id: meta.empresa_id,
+        modo,
+        reimpresso_por: opts?.usuarioId || null,
+        motivo: opts?.exigirMotivoAdmin ? opts?.motivoAdmin?.trim() || null : null,
+        admin_override: opts?.exigirMotivoAdmin === true,
+      };
+    }),
+  );
+}
 
 export async function montarInputReciboRecebimentoCampo(
   recebimentoId: string,
@@ -89,10 +181,15 @@ export async function reimprimirReciboRecebimentoCampo(
   empresaIds: string[],
   modo: ModoReciboBaixaCobrador = 'termica',
   janelaPdf?: Window | null,
+  controle?: ControleReimpressaoReciboOpts,
 ): Promise<'bluetooth' | 'pdf' | 'navegador'> {
-  const input = await montarInputReciboRecebimentoCampo(recebimentoId, empresaIds);
+  const id = recebimentoId.trim();
+  const metas = await validarReimpressoesAntes([id], empresaIds, controle);
+  const input = await montarInputReciboRecebimentoCampo(id, empresaIds);
   if (!input) throw new Error('Recebimento não encontrado.');
-  return imprimirReciboBaixaCobrador({ ...input, modo, janelaPdf });
+  const resultado = await imprimirReciboBaixaCobrador({ ...input, modo, janelaPdf });
+  await registrarLogsReimpressao([id], metas, modo, controle);
+  return resultado;
 }
 
 /** Reimprime um ou vários recebimentos de campo no mesmo comprovante térmico. */
@@ -101,12 +198,19 @@ export async function reimprimirRecibosRecebimentosCampo(
   empresaIds: string[],
   modo: ModoReciboBaixaCobrador = 'termica',
   janelaPdf?: Window | null,
+  controle?: ControleReimpressaoReciboOpts,
 ): Promise<'bluetooth' | 'pdf' | 'navegador'> {
   const ids = [...new Set(recebimentoIds.map((id) => id.trim()).filter(Boolean))];
   if (ids.length === 0) throw new Error('Selecione ao menos um recebimento.');
 
+  const metas = await validarReimpressoesAntes(ids, empresaIds, controle);
+
   if (ids.length === 1) {
-    return reimprimirReciboRecebimentoCampo(ids[0], empresaIds, modo, janelaPdf);
+    const input = await montarInputReciboRecebimentoCampo(ids[0], empresaIds);
+    if (!input) throw new Error('Recebimento não encontrado.');
+    const resultado = await imprimirReciboBaixaCobrador({ ...input, modo, janelaPdf });
+    await registrarLogsReimpressao(ids, metas, modo, controle);
+    return resultado;
   }
 
   const inputs = (
@@ -131,7 +235,7 @@ export async function reimprimirRecibosRecebimentosCampo(
     .filter(Boolean)
     .join(', ');
 
-  return imprimirReciboBaixaCobrador({
+  const resultado = await imprimirReciboBaixaCobrador({
     ...inputs[0],
     parcelas,
     totalCentavos,
@@ -141,4 +245,6 @@ export async function reimprimirRecibosRecebimentosCampo(
     modo,
     janelaPdf,
   });
+  await registrarLogsReimpressao(ids, metas, modo, controle);
+  return resultado;
 }

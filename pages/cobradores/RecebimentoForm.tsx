@@ -15,6 +15,7 @@ import {
   atualizarRecebimentoCampo,
   buscarRecebimentoCampo,
   listarCobradoresSelect,
+  normalizarFormaPagamentoRecebimentoCampo,
 } from '../../lib/cobRecebimentosSupabase';
 import {
   normalizarFormaPagamentoCobradorCampo,
@@ -180,7 +181,7 @@ export const RecebimentoForm: React.FC = () => {
           cobrador_id: formData.cobrador_id,
           data: formData.data,
           valor_centavos: valorCentavos,
-          forma_pagamento: formData.forma_pagamento,
+          forma_pagamento: normalizarFormaPagamentoRecebimentoCampo(formData.forma_pagamento),
           status: formData.status,
           observacao: formData.observacao.trim() || null,
           created_by: user?.id || null,

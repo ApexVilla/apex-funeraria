@@ -1,13 +1,19 @@
 import React, { useCallback, useMemo, useState } from 'react';
-import { Search, History, Bluetooth, FileText, CheckCircle2 } from 'lucide-react';
+import { Search, History, Bluetooth, FileText, ShieldAlert } from 'lucide-react';
 import { Button, Card, Input } from '../ui/Components';
 import { useToast } from '../../lib/ToastStore';
+import { useAuth } from '../../lib/AuthContext';
 import { buscarClientesPorTermo, type ClienteBuscaRow } from '../../lib/buscarClientesEmpresa';
 import {
+  enriquecerRecebimentosComReimpressao,
   listarRecebimentosCampoPorCliente,
   type RecebimentoCampoDto,
 } from '../../lib/cobRecebimentosSupabase';
 import { reimprimirRecibosRecebimentosCampo } from '../../lib/cobradorReciboCampo';
+import {
+  COBRADOR_REIMPRESSAO_DIAS_LIMITE,
+  COBRADOR_REIMPRESSAO_LIMITE,
+} from '../../lib/cobradorReciboReimpressao';
 import {
   garantirConexaoBluetoothAntesDaBaixa,
   impressoraCobradorPrecisaConexaoPrevia,
@@ -16,6 +22,7 @@ import { IMPRESSORA_BLUETOOTH_CELULAR_ID, loadReciboTermicoConfigCobrador } from
 import { labelFormaPagamentoRecibo } from '../../lib/ReciboTermicoService';
 import { reservarJanelaImpressaoPdf } from '../../lib/printPdfBlob';
 import { formatarDataIsoPtBr } from '../../lib/contratoDatas';
+import { CobradorReimpressaoMotivoModal } from './CobradorReimpressaoMotivoModal';
 
 const formatCurrency = (centavos: number) =>
   `R$ ${(centavos / 100).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}`;
@@ -24,13 +31,20 @@ type Props = {
   empresaIdsFiltro: string[];
   /** Quando definido, lista só recebimentos desse cobrador (perfil cobrador). */
   cobradorIdFiltro?: string | null;
+  /** Cobrador em campo: regras de 7 dias e limite de 3 reimpressões. */
+  restricaoCobrador?: boolean;
+  /** Escritório/gestor: motivo obrigatório ao reimprimir. */
+  exigirMotivoAdmin?: boolean;
 };
 
 export const CobrancasReimprimirReciboTab: React.FC<Props> = ({
   empresaIdsFiltro,
   cobradorIdFiltro,
+  restricaoCobrador = false,
+  exigirMotivoAdmin = false,
 }) => {
   const { showToast } = useToast();
+  const { user } = useAuth();
   const [searchTerm, setSearchTerm] = useState('');
   const [buscando, setBuscando] = useState(false);
   const [clientes, setClientes] = useState<ClienteBuscaRow[]>([]);
@@ -42,6 +56,16 @@ export const CobrancasReimprimirReciboTab: React.FC<Props> = ({
   const [carregandoReceb, setCarregandoReceb] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [imprimindo, setImprimindo] = useState(false);
+  const [motivoModalAberto, setMotivoModalAberto] = useState(false);
+  const [modoPendente, setModoPendente] = useState<'termica' | 'pdf' | null>(null);
+
+  const recebimentosElegiveis = useMemo(
+    () =>
+      restricaoCobrador
+        ? recebimentos.filter((r) => r.reimpressao_permitida !== false)
+        : recebimentos,
+    [recebimentos, restricaoCobrador],
+  );
 
   const totalSelecionado = useMemo(
     () =>
@@ -89,11 +113,17 @@ export const CobrancasReimprimirReciboTab: React.FC<Props> = ({
           cliente_id: id,
           cobrador_id: cobradorIdFiltro || undefined,
           limite: 120,
+          apenas_janela_cobrador: restricaoCobrador,
         });
-        setRecebimentos(rows);
-        if (rows.length === 0) {
+        const enriquecidos = await enriquecerRecebimentosComReimpressao(rows, {
+          cobradorRestrito: restricaoCobrador,
+        });
+        setRecebimentos(enriquecidos);
+        if (enriquecidos.length === 0) {
           showToast(
-            'Nenhum recebimento em campo encontrado para este cliente. Só aparecem parcelas que você já baixou aqui na carteira.',
+            restricaoCobrador
+              ? `Nenhum recebimento nos últimos ${COBRADOR_REIMPRESSAO_DIAS_LIMITE} dias elegível para reimprimir.`
+              : 'Nenhum recebimento em campo encontrado para este cliente.',
             'info',
           );
         }
@@ -104,23 +134,63 @@ export const CobrancasReimprimirReciboTab: React.FC<Props> = ({
         setCarregandoReceb(false);
       }
     },
-    [empresaIdsFiltro, cobradorIdFiltro, showToast],
+    [empresaIdsFiltro, cobradorIdFiltro, restricaoCobrador, showToast],
   );
 
-  const toggleSelect = (id: string) => {
+  const toggleSelect = (r: RecebimentoCampoDto) => {
+    if (restricaoCobrador && r.reimpressao_permitida === false) return;
     setSelectedIds((prev) => {
       const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+      if (next.has(r.id)) next.delete(r.id);
+      else next.add(r.id);
       return next;
     });
   };
 
   const selectAll = () => {
-    if (selectedIds.size === recebimentos.length) {
+    const idsElegiveis = recebimentosElegiveis.map((r) => r.id);
+    if (selectedIds.size === idsElegiveis.length && idsElegiveis.length > 0) {
       setSelectedIds(new Set());
     } else {
-      setSelectedIds(new Set(recebimentos.map((r) => r.id)));
+      setSelectedIds(new Set(idsElegiveis));
+    }
+  };
+
+  const executarImpressao = async (
+    ids: string[],
+    modo: 'termica' | 'pdf',
+    motivoAdmin?: string,
+    janelaPdf?: Window | null,
+  ) => {
+    setImprimindo(true);
+    try {
+      const resultado = await reimprimirRecibosRecebimentosCampo(
+        ids,
+        empresaIdsFiltro,
+        modo,
+        janelaPdf ?? undefined,
+        {
+          cobradorRestrito: restricaoCobrador,
+          exigirMotivoAdmin,
+          motivoAdmin,
+          usuarioId: user?.id || null,
+        },
+      );
+      const msg =
+        resultado === 'bluetooth'
+          ? 'Recibo enviado para a maquininha.'
+          : resultado === 'pdf'
+            ? 'Recibo PDF aberto.'
+            : 'Recibo aberto para impressão.';
+      showToast(msg, 'success');
+      if (clienteId) await carregarRecebimentos(clienteId, clienteNome);
+    } catch (e) {
+      if (janelaPdf && !janelaPdf.closed) janelaPdf.close();
+      showToast(e instanceof Error ? e.message : 'Falha ao reimprimir.', 'error');
+    } finally {
+      setImprimindo(false);
+      setMotivoModalAberto(false);
+      setModoPendente(null);
     }
   };
 
@@ -128,6 +198,12 @@ export const CobrancasReimprimirReciboTab: React.FC<Props> = ({
     const ids = [...selectedIds];
     if (ids.length === 0) {
       showToast('Selecione ao menos um recebimento.', 'warning');
+      return;
+    }
+
+    if (exigirMotivoAdmin) {
+      setModoPendente(modo);
+      setMotivoModalAberto(true);
       return;
     }
 
@@ -152,27 +228,37 @@ export const CobrancasReimprimirReciboTab: React.FC<Props> = ({
       }
     }
 
-    setImprimindo(true);
-    try {
-      const resultado = await reimprimirRecibosRecebimentosCampo(
-        ids,
-        empresaIdsFiltro,
-        modo,
-        janelaPdf ?? undefined,
-      );
-      const msg =
-        resultado === 'bluetooth'
-          ? 'Recibo enviado para a maquininha.'
-          : resultado === 'pdf'
-            ? 'Recibo PDF aberto.'
-            : 'Recibo aberto para impressão.';
-      showToast(msg, 'success');
-    } catch (e) {
-      if (janelaPdf && !janelaPdf.closed) janelaPdf.close();
-      showToast(e instanceof Error ? e.message : 'Falha ao reimprimir.', 'error');
-    } finally {
-      setImprimindo(false);
+    await executarImpressao(ids, modo, undefined, janelaPdf);
+  };
+
+  const confirmarComMotivo = async (motivo: string) => {
+    const modo = modoPendente;
+    if (!modo) return;
+    const ids = [...selectedIds];
+    if (ids.length === 0) return;
+
+    const janelaPdf = modo === 'pdf' ? reservarJanelaImpressaoPdf() : null;
+    if (modo === 'pdf' && !janelaPdf) {
+      showToast('Permita pop-ups para abrir o PDF.', 'warning');
+      return;
     }
+
+    if (modo === 'termica') {
+      const cfgCob = loadReciboTermicoConfigCobrador();
+      const precisaConectar =
+        !cfgCob.impressoraBluetooth?.id || impressoraCobradorPrecisaConexaoPrevia(cfgCob);
+      if (precisaConectar) {
+        try {
+          await garantirConexaoBluetoothAntesDaBaixa();
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : 'Não foi possível conectar à impressora.';
+          if (!/cancel|abort/i.test(msg)) showToast(msg, 'warning');
+          return;
+        }
+      }
+    }
+
+    await executarImpressao(ids, modo, motivo, janelaPdf);
   };
 
   return (
@@ -183,8 +269,24 @@ export const CobrancasReimprimirReciboTab: React.FC<Props> = ({
           Reimprimir recibo de parcelas já pagas
         </p>
         <p className="mt-1 text-emerald-900/90 leading-snug">
-          Busque o cliente, marque o(s) recebimento(s) e imprima na{' '}
-          <strong>impressora térmica</strong> (Bluetooth) como na baixa em campo.
+          {restricaoCobrador ? (
+            <>
+              Cobrador: só recebimentos dos últimos{' '}
+              <strong>{COBRADOR_REIMPRESSAO_DIAS_LIMITE} dias</strong>, até{' '}
+              <strong>{COBRADOR_REIMPRESSAO_LIMITE} reimpressões</strong> por parcela. Após isso,
+              peça ao escritório.
+            </>
+          ) : exigirMotivoAdmin ? (
+            <>
+              Escritório: reimpressão liberada com registro de{' '}
+              <strong>motivo obrigatório</strong>.
+            </>
+          ) : (
+            <>
+              Busque o cliente, marque o(s) recebimento(s) e imprima na{' '}
+              <strong>impressora térmica</strong> (Bluetooth) como na baixa em campo.
+            </>
+          )}
         </p>
       </Card>
 
@@ -257,8 +359,9 @@ export const CobrancasReimprimirReciboTab: React.FC<Props> = ({
             <p className="text-sm text-gray-500 py-6 text-center">Carregando recebimentos…</p>
           ) : recebimentos.length === 0 ? (
             <p className="text-sm text-gray-600 py-4">
-              Não há recebimentos registrados em campo para este cliente
-              {cobradorIdFiltro ? ' na sua carteira' : ''}.
+              {restricaoCobrador
+                ? `Não há recebimentos elegíveis nos últimos ${COBRADOR_REIMPRESSAO_DIAS_LIMITE} dias.`
+                : `Não há recebimentos registrados em campo para este cliente${cobradorIdFiltro ? ' na sua carteira' : ''}.`}
             </p>
           ) : (
             <>
@@ -268,11 +371,13 @@ export const CobrancasReimprimirReciboTab: React.FC<Props> = ({
                     type="checkbox"
                     className="h-4 w-4 rounded border-gray-300"
                     checked={
-                      recebimentos.length > 0 && selectedIds.size === recebimentos.length
+                      recebimentosElegiveis.length > 0 &&
+                      selectedIds.size === recebimentosElegiveis.length
                     }
                     onChange={selectAll}
+                    disabled={recebimentosElegiveis.length === 0}
                   />
-                  Selecionar todos ({recebimentos.length})
+                  Selecionar elegíveis ({recebimentosElegiveis.length})
                 </label>
                 {selectedIds.size > 0 && (
                   <span className="text-sm font-medium text-emerald-700">
@@ -284,6 +389,7 @@ export const CobrancasReimprimirReciboTab: React.FC<Props> = ({
               <ul className="divide-y border rounded-xl overflow-hidden max-h-80 overflow-y-auto">
                 {recebimentos.map((r) => {
                   const sel = selectedIds.has(r.id);
+                  const bloqueado = restricaoCobrador && r.reimpressao_permitida === false;
                   const parcelaLabel =
                     r.parcela_codigo
                     || (r.parcela_numero
@@ -293,15 +399,21 @@ export const CobrancasReimprimirReciboTab: React.FC<Props> = ({
                     <li key={r.id}>
                       <button
                         type="button"
+                        disabled={bloqueado}
                         className={`w-full text-left px-4 py-3 flex items-start gap-3 transition-colors ${
-                          sel ? 'bg-emerald-50' : 'hover:bg-gray-50'
+                          bloqueado
+                            ? 'opacity-60 cursor-not-allowed bg-gray-50'
+                            : sel
+                              ? 'bg-emerald-50'
+                              : 'hover:bg-gray-50'
                         }`}
-                        onClick={() => toggleSelect(r.id)}
+                        onClick={() => toggleSelect(r)}
                       >
                         <input
                           type="checkbox"
                           className="h-4 w-4 mt-1 rounded border-gray-300"
                           checked={sel}
+                          disabled={bloqueado}
                           readOnly
                         />
                         <div className="flex-1 min-w-0">
@@ -311,6 +423,23 @@ export const CobrancasReimprimirReciboTab: React.FC<Props> = ({
                             {labelFormaPagamentoRecibo(r.forma_pagamento) || r.forma_pagamento}
                             {r.cobrador_nome ? ` · ${r.cobrador_nome}` : ''}
                           </p>
+                          {restricaoCobrador && !bloqueado && (
+                            <p className="text-xs text-emerald-700 mt-1">
+                              {r.reimpressoes_restantes ?? COBRADOR_REIMPRESSAO_LIMITE} reimpressão(ões)
+                              restante(s) · {r.reimpressao_dias_restantes ?? 0} dia(s) no prazo
+                            </p>
+                          )}
+                          {bloqueado && r.reimpressao_bloqueio && (
+                            <p className="text-xs text-amber-700 mt-1 flex items-center gap-1">
+                              <ShieldAlert className="h-3 w-3 shrink-0" />
+                              {r.reimpressao_bloqueio}
+                            </p>
+                          )}
+                          {exigirMotivoAdmin && (r.reimpressoes_count ?? 0) > 0 && (
+                            <p className="text-xs text-gray-500 mt-1">
+                              Já reimpresso {r.reimpressoes_count}x
+                            </p>
+                          )}
                         </div>
                         <span className="font-semibold text-gray-900 shrink-0">
                           {formatCurrency(r.valor_centavos)}
@@ -355,6 +484,19 @@ export const CobrancasReimprimirReciboTab: React.FC<Props> = ({
           )}
         </Card>
       )}
+
+      <CobradorReimpressaoMotivoModal
+        isOpen={motivoModalAberto}
+        loading={imprimindo}
+        qtdRecebimentos={selectedIds.size}
+        onClose={() => {
+          if (!imprimindo) {
+            setMotivoModalAberto(false);
+            setModoPendente(null);
+          }
+        }}
+        onConfirm={confirmarComMotivo}
+      />
     </div>
   );
 };

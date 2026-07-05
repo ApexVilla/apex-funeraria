@@ -60,6 +60,9 @@ export interface AtendimentoSB {
     formulario_preparacao?: string | null;
     local_velorio?: string;
     local_sepultamento?: string;
+    local_saida_enterro?: string;
+    sepultamento_quadra?: string;
+    sepultamento_lote?: string;
     religiao_falecido?: string;
     data_falecido?: string;
     data_nascimento_falecido?: string;
@@ -452,6 +455,9 @@ export const ServicoProvider: React.FC<{ children: React.ReactNode }> = ({ child
                 tipo_atendimento: form.tipo_atendimento || 'particular',
                 local_velorio: form.local_velorio || null,
                 local_sepultamento: form.local_sepultamento || null,
+                local_saida_enterro: form.local_saida_enterro || null,
+                sepultamento_quadra: form.sepultamento_quadra || null,
+                sepultamento_lote: form.sepultamento_lote || null,
                 religiao_falecido: form.religiao_falecido || null,
                 data_falecido: form.data_falecido || null,
                 data_nascimento_falecido: form.data_nascimento_falecido || null,

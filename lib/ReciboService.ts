@@ -108,10 +108,9 @@ export function buildReciboContaPagarData(input: ReciboContaPagarInput): ReciboD
 
 export async function imprimirReciboContaPagar(input: ReciboContaPagarInput) {
   let forma_pagamento = input.forma_pagamento;
-  let conta_bancaria = input.conta_bancaria;
   let data_pagamento = input.data_pagamento;
 
-  if (input.situacao === 'quitado' && (!forma_pagamento || !conta_bancaria)) {
+  if (input.situacao === 'quitado' && (!forma_pagamento || !data_pagamento)) {
     try {
       const { data: cp } = await supabase
         .from('fin_contas_pagar')
@@ -122,7 +121,7 @@ export async function imprimirReciboContaPagar(input: ReciboContaPagarInput) {
       if (cp?.id) {
         const { data: bData } = await supabase
           .from('fin_contas_pagar_baixas')
-          .select('forma_pagamento_id, conta_bancaria_id, data_baixa, created_at')
+          .select('forma_pagamento_id, data_baixa, created_at')
           .eq('conta_pagar_id', cp.id)
           .order('created_at', { ascending: false })
           .limit(1)
@@ -136,14 +135,6 @@ export async function imprimirReciboContaPagar(input: ReciboContaPagarInput) {
               .eq('id', bData.forma_pagamento_id)
               .maybeSingle();
             if (f?.nome) forma_pagamento = f.nome;
-          }
-          if (bData.conta_bancaria_id && !conta_bancaria) {
-            const { data: c } = await supabase
-              .from('fin_contas_bancarias')
-              .select('nome')
-              .eq('id', bData.conta_bancaria_id)
-              .maybeSingle();
-            if (c?.nome) conta_bancaria = c.nome;
           }
           if (!data_pagamento) {
             data_pagamento = bData.data_baixa
@@ -160,7 +151,6 @@ export async function imprimirReciboContaPagar(input: ReciboContaPagarInput) {
   await generateReciboPDF(buildReciboContaPagarData({
     ...input,
     forma_pagamento,
-    conta_bancaria,
     data_pagamento,
   }));
 }
@@ -263,9 +253,7 @@ export const generateReciboPDF = async (
   const emAberto = data.modoDocumento === 'em_aberto';
   const tituloDocumento = emAberto
     ? 'ORÇAMENTO EM ABERTO Nº'
-    : isPagamento
-      ? 'COMPROVANTE Nº'
-      : 'RECIBO Nº';
+    : 'RECIBO Nº';
 
   const logo = await loadLogoForPdf(empresa.logo_url);
   const corpoY = drawReciboCabecalhoComLogo(doc, W, M, null, {
@@ -341,7 +329,7 @@ export const generateReciboPDF = async (
   doc.text(refLines, M, y + 9);
   y += 9 + refLines.length * 5 + 8;
 
-  const showMetaCard = !!(data.contratoCodigo || data.planoNome || data.atendenteNome || data.formaPagamento || data.dataPagamento || data.contaBancaria || (isPagamento && data.clienteNome));
+  const showMetaCard = !!(data.contratoCodigo || data.planoNome || data.atendenteNome || data.formaPagamento || data.dataPagamento || (isPagamento && data.clienteNome));
   if (showMetaCard) {
     const pad = 5;
     const rowH = 6;
@@ -379,7 +367,6 @@ export const generateReciboPDF = async (
           { label: 'NOTA FISCAL:', value: data.notaFiscal || '—', col: 1 },
           { label: 'VENCIMENTO:', value: data.vencimento || '—', col: 1 },
           { label: 'FORMA PGTO:', value: data.formaPagamento || '—', col: 2 },
-          { label: 'CONTA/CAIXA:', value: data.contaBancaria || '—', col: 2 },
           { label: 'DATA PGTO:', value: data.dataPagamento || data.data || '—', col: 2 },
         ]
       : [

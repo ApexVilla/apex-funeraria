@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Search, Eye, Edit, Plus, Users, UserCheck, UserX, AlertTriangle,
-  Star, Download, Filter, ChevronLeft, ChevronRight, MoreVertical,
+  Star, Download, Filter, ChevronLeft, ChevronRight, MoreVertical, Briefcase,
   Phone, Mail, Crown, MessageCircle, FileText, Archive, CreditCard, Clock
 } from 'lucide-react';
 import { PageHeader } from '../../components/common/PageHeader';
@@ -20,6 +20,7 @@ import { calcularCompletudeCadastroCliente } from '../../lib/clienteCompletudeCa
 import { dataHojeIsoLocal, formatarDataIsoPtBr } from '../../lib/contratoDatas';
 import { CLIENTES_LIST_SELECT, CLIENTES_LIST_TABLE } from '../../lib/clientesListQuery';
 import { ContratoStatusIndicador } from '../../components/clientes/ContratoStatusIndicador';
+import { clienteEhFuncionario } from '../../lib/clienteFuncionario';
 import {
   escolherAssinaturaPrincipal,
   resolverStatusContratoExibicao,
@@ -47,10 +48,11 @@ export const ClientesList: React.FC = () => {
   const [buscaRemota, setBuscaRemota] = useState<any[]>([]);
   const [buscando, setBuscando] = useState(false);
   const [codigoFilter, setCodigoFilter] = useState('');
-  const [columnFilters, setColumnFilters] = useState<{ status: string[]; tipo: string[]; vipOnly: boolean }>({
+  const [columnFilters, setColumnFilters] = useState<{ status: string[]; tipo: string[]; vipOnly: boolean; funcionarioOnly: boolean }>({
     status: [],
     tipo: [],
     vipOnly: false,
+    funcionarioOnly: false,
   });
   const [listLoadError, setListLoadError] = useState<string | null>(null);
   const [filterMenuColumn, setFilterMenuColumn] = useState<string | null>(null);
@@ -185,6 +187,9 @@ export const ClientesList: React.FC = () => {
         if (columnFilters.vipOnly) {
           q = q.eq('cliente_vip', true);
         }
+        if (columnFilters.funcionarioOnly) {
+          q = q.contains('campos_personalizados', { eh_funcionario: true });
+        }
 
         if (codigoFilter) {
           q = q.ilike('codigo', `%${codigoFilter}%`);
@@ -264,9 +269,10 @@ export const ClientesList: React.FC = () => {
       const matchTipo = columnFilters.tipo.length === 0 || columnFilters.tipo.includes(c.tipo_cliente || '');
       const matchCodigo = !codigoFilter || (c.codigo || '').toLowerCase().includes(codigoFilter.toLowerCase());
       const matchVip = !columnFilters.vipOnly || Boolean(c.cliente_vip);
-      return matchSearch && matchStatus && matchTipo && matchCodigo && matchVip;
+      const matchFuncionario = !columnFilters.funcionarioOnly || clienteEhFuncionario(c);
+      return matchSearch && matchStatus && matchTipo && matchCodigo && matchVip && matchFuncionario;
     });
-  }, [buscaRemota, searchTerm, columnFilters.status, columnFilters.tipo, columnFilters.vipOnly, codigoFilter]);
+  }, [buscaRemota, searchTerm, columnFilters.status, columnFilters.tipo, columnFilters.vipOnly, columnFilters.funcionarioOnly, codigoFilter]);
 
   const isBuscaAtiva = searchTerm.trim().length >= 2;
 
@@ -308,6 +314,7 @@ export const ClientesList: React.FC = () => {
     columnFilters.status.join(','),
     columnFilters.tipo.join(','),
     columnFilters.vipOnly,
+    columnFilters.funcionarioOnly,
     codigoFilter,
     dataRevisionFilial,
     empresaIdsKey,
@@ -317,6 +324,7 @@ export const ClientesList: React.FC = () => {
     columnFilters.status.length > 0 ||
     columnFilters.tipo.length > 0 ||
     columnFilters.vipOnly ||
+    columnFilters.funcionarioOnly ||
     Boolean(codigoFilter.trim());
 
   useEffect(() => {
@@ -483,7 +491,7 @@ export const ClientesList: React.FC = () => {
       {/* Stats Cards */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
         <Card className="p-4 hover:shadow-md transition-shadow cursor-pointer group"
-          onClick={() => setColumnFilters({ status: [], tipo: [], vipOnly: false })}>
+          onClick={() => setColumnFilters({ status: [], tipo: [], vipOnly: false, funcionarioOnly: false })}>
           <div className="flex items-center gap-3">
             <div className="h-10 w-10 rounded-xl bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center shadow-sm group-hover:scale-105 transition-transform">
               <Users className="h-5 w-5 text-white" />
@@ -495,7 +503,7 @@ export const ClientesList: React.FC = () => {
           </div>
         </Card>
         <Card className="p-4 hover:shadow-md transition-shadow cursor-pointer group"
-          onClick={() => setColumnFilters({ status: ['ativo'], tipo: [], vipOnly: false })}>
+          onClick={() => setColumnFilters({ status: ['ativo'], tipo: [], vipOnly: false, funcionarioOnly: false })}>
           <div className="flex items-center gap-3">
             <div className="h-10 w-10 rounded-xl bg-gradient-to-br from-emerald-500 to-emerald-600 flex items-center justify-center shadow-sm group-hover:scale-105 transition-transform">
               <UserCheck className="h-5 w-5 text-white" />
@@ -507,7 +515,7 @@ export const ClientesList: React.FC = () => {
           </div>
         </Card>
         <Card className="p-4 hover:shadow-md transition-shadow cursor-pointer group"
-          onClick={() => setColumnFilters({ status: ['inadimplente'], tipo: [], vipOnly: false })}>
+          onClick={() => setColumnFilters({ status: ['inadimplente'], tipo: [], vipOnly: false, funcionarioOnly: false })}>
           <div className="flex items-center gap-3">
             <div className="h-10 w-10 rounded-xl bg-gradient-to-br from-red-500 to-red-600 flex items-center justify-center shadow-sm group-hover:scale-105 transition-transform">
               <AlertTriangle className="h-5 w-5 text-white" />
@@ -519,7 +527,7 @@ export const ClientesList: React.FC = () => {
           </div>
         </Card>
         <Card className="p-4 hover:shadow-md transition-shadow cursor-pointer group"
-          onClick={() => setColumnFilters({ status: [], tipo: ['prospect'], vipOnly: false })}>
+          onClick={() => setColumnFilters({ status: [], tipo: ['prospect'], vipOnly: false, funcionarioOnly: false })}>
           <div className="flex items-center gap-3">
             <div className="h-10 w-10 rounded-xl bg-gradient-to-br from-violet-500 to-violet-600 flex items-center justify-center shadow-sm group-hover:scale-105 transition-transform">
               <UserX className="h-5 w-5 text-white" />
@@ -531,7 +539,7 @@ export const ClientesList: React.FC = () => {
           </div>
         </Card>
         <Card className="p-4 hover:shadow-md transition-shadow cursor-pointer group"
-          onClick={() => setColumnFilters({ status: [], tipo: [], vipOnly: true })}>
+          onClick={() => setColumnFilters({ status: [], tipo: [], vipOnly: true, funcionarioOnly: false })}>
           <div className="flex items-center gap-3">
             <div className="h-10 w-10 rounded-xl bg-gradient-to-br from-amber-500 to-amber-600 flex items-center justify-center shadow-sm group-hover:scale-105 transition-transform">
               <Crown className="h-5 w-5 text-white" />
@@ -573,7 +581,7 @@ export const ClientesList: React.FC = () => {
             <div className="w-40">
               <Select
                 value={columnFilters.status.length === 1 ? columnFilters.status[0] : ''}
-                onChange={(e) => setColumnFilters(prev => ({ ...prev, status: e.target.value ? [e.target.value] : [], tipo: [], vipOnly: false }))}
+                onChange={(e) => setColumnFilters(prev => ({ ...prev, status: e.target.value ? [e.target.value] : [], tipo: [], vipOnly: false, funcionarioOnly: false }))}
               >
                 <option value="">Status: Todos</option>
                 <option value="ativo">Ativo</option>
@@ -598,6 +606,13 @@ export const ClientesList: React.FC = () => {
               placeholder="Código do cliente"
               className="max-w-xs"
             />
+            <Button
+              variant={columnFilters.funcionarioOnly ? 'secondary' : 'outline'}
+              onClick={() => setColumnFilters((prev) => ({ ...prev, funcionarioOnly: !prev.funcionarioOnly }))}
+            >
+              <Briefcase className="h-4 w-4 mr-1" />
+              Funcionários
+            </Button>
           </div>
         )}
       </Card>
@@ -635,7 +650,7 @@ export const ClientesList: React.FC = () => {
               <Button
                 variant="outline"
                 className="mt-3"
-                onClick={() => setColumnFilters({ status: [], tipo: [], vipOnly: false })}
+                onClick={() => setColumnFilters({ status: [], tipo: [], vipOnly: false, funcionarioOnly: false })}
               >
                 Limpar filtros
               </Button>
@@ -732,6 +747,9 @@ export const ClientesList: React.FC = () => {
                             >
                               {cliente.nome}
                             </span>
+                            {clienteEhFuncionario(cliente) && (
+                              <Badge variant="info">Funcionário</Badge>
+                            )}
                             {cliente.cliente_vip && (
                               <Star className="h-3.5 w-3.5 text-amber-500 fill-amber-500" />
                             )}
