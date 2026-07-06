@@ -52,6 +52,7 @@ import {
     dataCalendarioSp,
     dataIsoSessao,
     dataMovimentoEfetiva,
+    hojeCalendarioSp,
     movimentoPertenceSessao,
 } from '../../lib/finCaixaSessaoMovimento';
 
@@ -332,13 +333,11 @@ export const Tesouraria: React.FC = () => {
     const [selectedContaId, setSelectedContaId] = useState('');
     const [modal, setModal] = useState<ModalType>(null);
     const [showHistory, setShowHistory] = useState(false);
-    const [periodoInicio, setPeriodoInicio] = useState(() => {
-        const d = new Date();
-        return new Date(d.getFullYear(), d.getMonth(), 1).toISOString().slice(0, 10);
-    });
+    const [periodoInicio, setPeriodoInicio] = useState(() => `${hojeCalendarioSp().slice(0, 7)}-01`);
     const [periodoFim, setPeriodoFim] = useState(() => {
-        const d = new Date();
-        return new Date(d.getFullYear(), d.getMonth() + 1, 0).toISOString().slice(0, 10);
+        const [y, m] = hojeCalendarioSp().split('-').map(Number);
+        const ultimoDia = new Date(y, m, 0).getDate();
+        return `${y}-${String(m).padStart(2, '0')}-${String(ultimoDia).padStart(2, '0')}`;
     });
     const [treeMovimentos, setTreeMovimentos] = useState<CaixaMovimento[]>([]);
     const [treeMovimentosAnteriores, setTreeMovimentosAnteriores] = useState<CaixaMovimento[]>([]);
@@ -353,7 +352,7 @@ export const Tesouraria: React.FC = () => {
     const [modalContaDestinoId, setModalContaDestinoId] = useState('');
     const [modalContaOrigemId, setModalContaOrigemId] = useState('');
     const [modalObs, setModalObs] = useState('');
-    const [modalDataRef, setModalDataRef] = useState(new Date().toISOString().slice(0, 10));
+    const [modalDataRef, setModalDataRef] = useState(() => hojeCalendarioSp());
     const [modalLoading, setModalLoading] = useState(false);
     const [showNovaReceberCaixa, setShowNovaReceberCaixa] = useState(false);
     const [showNovaPagarCaixa, setShowNovaPagarCaixa] = useState(false);
@@ -1245,7 +1244,7 @@ export const Tesouraria: React.FC = () => {
         setModalObs('');
         setModalError('');
         setModalLoading(false);
-        setModalDataRef(new Date().toISOString().slice(0, 10));
+        setModalDataRef(hojeCalendarioSp());
         setFechamentoSessaoAlvo(null);
         setFechamentoMovimentos([]);
     };
@@ -1386,7 +1385,7 @@ export const Tesouraria: React.FC = () => {
     const garantirCaixaAbertoParaConta = useCallback(async (contaId: string, dataRef?: string): Promise<boolean> => {
         let sessaoId = await verificarStatusCaixa(contaId);
         if (!sessaoId) {
-            const dataParaAbrir = dataRef || new Date().toISOString().slice(0, 10);
+            const dataParaAbrir = dataRef || hojeCalendarioSp();
             const dataFormatada = dataParaAbrir.split('-').reverse().join('/');
             const abrirAgora = window.confirm(`O dia está encerrado. Deseja abrir o dia ${dataFormatada} para continuar o lançamento?`);
             if (!abrirAgora) return false;

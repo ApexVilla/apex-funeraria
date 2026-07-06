@@ -314,6 +314,8 @@ export const ContasReceber: React.FC = () => {
     const [baixasHoje, setBaixasHoje] = useState<BaixasResumoState>(BAIXAS_VAZIAS);
     /** Baixas do período ativo (quando filtro por recebimento). */
     const [baixasPeriodo, setBaixasPeriodo] = useState<BaixasResumoState>(BAIXAS_VAZIAS);
+    /** Baixas dos títulos da busca (forma de pagamento na baixa). */
+    const [baixasFormaBusca, setBaixasFormaBusca] = useState<BaixasResumoState>(BAIXAS_VAZIAS);
     /** Usuário/forma por título na lista visível (independente do filtro de data dos cards). */
     const [baixasPorContaLista, setBaixasPorContaLista] = useState<
         Map<string, { valorCentavos: number; formaLabel: string; usuarioNome: string }>
@@ -324,11 +326,12 @@ export const ContasReceber: React.FC = () => {
     const buscaAtiva = searchTerm.trim().length >= 2;
     const periodoEhSoHoje = dataInicio === today && dataFim === today;
     const baixasAtivas = filtroDataCampo === 'recebimento' ? baixasPeriodo : baixasHoje;
-    /** Resumo por forma: período quando filtro recebimento ≠ só hoje; senão recebimentos de hoje. */
-    const baixasFormaResumo =
-        filtroDataCampo === 'recebimento' && !periodoEhSoHoje && !buscaAtiva
-            ? baixasPeriodo
-            : baixasHoje;
+    /** Resumo por forma alinhado ao contexto do filtro ativo. */
+    const baixasFormaResumo = buscaAtiva
+        ? baixasFormaBusca
+        : filtroDataCampo === 'recebimento'
+          ? baixasPeriodo
+          : baixasHoje;
 
     const openRowMenuFromElement = (cr: ContaReceberDetalhada, element: HTMLElement) => {
         const rect = element.getBoundingClientRect();
@@ -437,11 +440,11 @@ export const ContasReceber: React.FC = () => {
         return processarLinhasBaixa((data ?? []) as Array<Record<string, unknown>>, userMap);
     }, [empresaIdsBaixas]);
 
-    const carregarBaixasPorContaIds = useCallback(async (
+    const carregarBaixasResumoPorContaIds = useCallback(async (
         contaIds: string[],
-    ): Promise<Map<string, { valorCentavos: number; formaLabel: string; usuarioNome: string }>> => {
+    ): Promise<BaixasResumoState> => {
         const ids = Array.from(new Set(contaIds.map((id) => id.trim()).filter(Boolean)));
-        if (!empresaIdsBaixas.length || ids.length === 0) return new Map();
+        if (!empresaIdsBaixas.length || ids.length === 0) return BAIXAS_VAZIAS;
 
         const BAIXA_SELECT =
             'valor_pago_centavos, conta_receber_id, data_baixa, created_by, forma_pagamento:fin_formas_pagamento(codigo, nome, tipo)';
@@ -478,8 +481,15 @@ export const ContasReceber: React.FC = () => {
             });
         }
 
-        return processarLinhasBaixa(allRows, userMap).porConta;
+        return processarLinhasBaixa(allRows, userMap);
     }, [empresaIdsBaixas]);
+
+    const carregarBaixasPorContaIds = useCallback(async (
+        contaIds: string[],
+    ): Promise<Map<string, { valorCentavos: number; formaLabel: string; usuarioNome: string }>> => {
+        const resumo = await carregarBaixasResumoPorContaIds(contaIds);
+        return resumo.porConta;
+    }, [carregarBaixasResumoPorContaIds]);
 
     // Recebimentos de hoje (data de recebimento = data_baixa na baixa)
     useEffect(() => {
@@ -510,6 +520,32 @@ export const ContasReceber: React.FC = () => {
             });
         return () => { cancelled = true; };
     }, [carregarBaixas, filtroDataCampo, dataInicio, dataFim, today, buscaAtiva, refreshTick, dataRevisionEmpresa]);
+
+    // Baixas por forma nos títulos retornados pela busca
+    useEffect(() => {
+        if (!buscaAtiva) {
+            setBaixasFormaBusca(BAIXAS_VAZIAS);
+            return;
+        }
+        const ids = contasReceberDetalhadas.map((cr) => cr.id).filter(Boolean);
+        if (ids.length === 0) {
+            setBaixasFormaBusca(BAIXAS_VAZIAS);
+            return;
+        }
+        let cancelled = false;
+        carregarBaixasResumoPorContaIds(ids)
+            .then((res) => { if (!cancelled) setBaixasFormaBusca(res); })
+            .catch((err) => {
+                console.error('Erro ao carregar baixas da busca:', err);
+                if (!cancelled) setBaixasFormaBusca(BAIXAS_VAZIAS);
+            });
+        return () => { cancelled = true; };
+    }, [buscaAtiva, contasReceberDetalhadas, carregarBaixasResumoPorContaIds, refreshTick, dataRevisionEmpresa]);
+
+    const contaIdsFormaSelecionada = useMemo(() => {
+        if (!formaHojeFilter) return null;
+        return baixasFormaResumo.porForma.find((f) => f.chave === formaHojeFilter)?.contaIds ?? [];
+    }, [formaHojeFilter, baixasFormaResumo]);
 
     const getRowValueForFilter = (cr: ContaReceberDetalhada, columnKey: ColumnFilterKey): string => {
         switch (columnKey) {
@@ -627,9 +663,7 @@ export const ContasReceber: React.FC = () => {
             .map((t) => t.trim())
             .filter((t) => t.length >= 2 && !SEARCH_STOPWORDS.has(t));
 
-        const idsForma = formaHojeFilter
-            ? baixasFormaResumo.porForma.find((f) => f.chave === formaHojeFilter)?.contaIds ?? []
-            : [];
+        const idsForma = contaIdsFormaSelecionada ?? [];
 
         const filtradas = baseList.filter((cr) => {
             const codigoNorm = normalizeSearchText(cr.codigo);
@@ -669,7 +703,7 @@ export const ContasReceber: React.FC = () => {
             if (aVal !== bVal) return bVal.localeCompare(aVal);
             return a.data_vencimento.localeCompare(b.data_vencimento);
         });
-    }, [contasReceberDetalhadas, searchTerm, formaHojeFilter, baixasAtivas, baixasFormaResumo, filtroDataCampo, columnFilters]);
+    }, [contasReceberDetalhadas, searchTerm, formaHojeFilter, contaIdsFormaSelecionada, filtroDataCampo, columnFilters]);
 
     const contaIdsComPagamento = useMemo(
         () => filtered
@@ -759,15 +793,10 @@ export const ContasReceber: React.FC = () => {
     );
 
     const aplicarFiltroFormaHoje = (chave: FormaHojeChave) => {
-        setFiltroDataCampo('recebimento');
-        if (periodoEhSoHoje || filtroDataCampo !== 'recebimento') {
-            setDataInicio(today);
-            setDataFim(today);
+        if (filtroDataCampo !== 'recebimento' && !buscaAtiva) {
+            setFiltroDataCampo('recebimento');
         }
-        setStatusFilter('');
-        setSearchTerm('');
-        setFormaHojeFilter(chave);
-        setPageSize(100);
+        setFormaHojeFilter((prev) => (prev === chave ? '' : chave));
         setPage(1);
     };
 
@@ -786,10 +815,10 @@ export const ContasReceber: React.FC = () => {
     }, [searchTerm, statusFilter, filtroDataCampo, dataInicio, dataFim, formaHojeFilter, pageSize, JSON.stringify(columnFilters)]);
 
     useEffect(() => {
-        if (filtroDataCampo !== 'recebimento' || dataInicio !== today || dataFim !== today) {
+        if (filtroDataCampo !== 'recebimento' && !buscaAtiva) {
             setFormaHojeFilter('');
         }
-    }, [filtroDataCampo, dataInicio, dataFim, today]);
+    }, [filtroDataCampo, buscaAtiva]);
 
     useEffect(() => {
         if (page > totalPages) setPage(totalPages);
@@ -820,7 +849,10 @@ export const ContasReceber: React.FC = () => {
 
         const total = filtered.length;
         const emAberto = filtered.filter(c => ['aberto', 'vencido', 'pago_parcial'].includes(c.status)).length;
-        return { aberto, vencido, pago, recebimentosHoje, qtdHoje, recebidoPeriodo, total, emAberto };
+        const sumTotalCentavos = filtered.reduce((s, c) => s + (c.valor_total_centavos || 0), 0);
+        const sumPagoCentavos = filtered.reduce((s, c) => s + (c.valor_pago_centavos || 0), 0);
+        const sumAbertoCentavos = filtered.reduce((s, c) => s + (c.valor_aberto_centavos || 0), 0);
+        return { aberto, vencido, pago, recebimentosHoje, qtdHoje, recebidoPeriodo, total, emAberto, sumTotalCentavos, sumPagoCentavos, sumAbertoCentavos };
     }, [filtered, contasReceberDetalhadas, today, baixasHoje, baixasPeriodo, filtroDataCampo]);
 
     const handleReceber = (conta: ContaReceberDetalhada) => {
@@ -953,14 +985,18 @@ export const ContasReceber: React.FC = () => {
                 <div className="flex flex-wrap items-center justify-between gap-2">
                     <div>
                         <h3 className="text-sm font-bold text-slate-900">
-                            {baixasFormaResumo === baixasPeriodo
-                                ? 'Recebimentos do período por forma'
-                                : 'Recebimentos de hoje por forma'}
+                            {buscaAtiva
+                                ? 'Recebimentos da busca por forma'
+                                : baixasFormaResumo === baixasPeriodo && !periodoEhSoHoje
+                                  ? 'Recebimentos do período por forma'
+                                  : 'Recebimentos de hoje por forma'}
                         </h3>
                         <p className="text-xs text-slate-500 mt-0.5">
-                            {baixasFormaResumo === baixasPeriodo
-                                ? `Por data de recebimento (${formatDataBr(dataInicio)} a ${formatDataBr(dataFim)}). Forma de pagamento na baixa — não confundir com tipo do documento (ex.: mensalidade paga em boleto).`
-                                : `Por data de recebimento (${today.split('-').reverse().join('/')}). Clique na forma para filtrar a lista.`}
+                            {buscaAtiva
+                                ? 'Forma de pagamento nas baixas dos títulos encontrados. Clique na forma para filtrar a lista.'
+                                : baixasFormaResumo === baixasPeriodo && !periodoEhSoHoje
+                                  ? `Por data de recebimento (${formatDataBr(dataInicio)} a ${formatDataBr(dataFim)}). Forma de pagamento na baixa — não confundir com tipo do documento (ex.: mensalidade paga em boleto).`
+                                  : `Por data de recebimento (${today.split('-').reverse().join('/')}). Clique na forma para filtrar a lista.`}
                         </p>
                     </div>
                     {formaHojeFilter && (
@@ -1018,9 +1054,11 @@ export const ContasReceber: React.FC = () => {
                 </div>
                 {baixasFormaResumo.qtd === 0 && (
                     <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-                        {baixasFormaResumo === baixasPeriodo
-                            ? 'Nenhum recebimento no período selecionado. Use filtro Recebimento + Este mês para ver boletos pagos no mês.'
-                            : 'Nenhum recebimento registrado hoje nesta unidade (por data de recebimento).'}
+                        {buscaAtiva
+                            ? 'Nenhuma baixa com forma de pagamento nos títulos da busca atual.'
+                            : baixasFormaResumo === baixasPeriodo && !periodoEhSoHoje
+                              ? 'Nenhum recebimento no período selecionado. Use filtro Recebimento + Este mês para ver boletos pagos no mês.'
+                              : 'Nenhum recebimento registrado hoje nesta unidade (por data de recebimento).'}
                     </p>
                 )}
             </div>
@@ -1540,6 +1578,23 @@ export const ContasReceber: React.FC = () => {
                                         );
                                     })}
                                 </tbody>
+                                <tfoot>
+                                    <tr className="bg-slate-50 dark:bg-slate-800/80 border-t-2 border-slate-200 dark:border-slate-700 font-semibold text-gray-900 dark:text-slate-100">
+                                        <td colSpan={9} className="py-3 px-4 text-right text-xs uppercase tracking-wider text-slate-500 dark:text-slate-400 font-bold">
+                                            Total filtrado ({filtered.length} {filtered.length === 1 ? 'título' : 'títulos'}):
+                                        </td>
+                                        <td className="py-3 px-4 text-right tabular-nums font-bold text-gray-900 dark:text-slate-100">
+                                            {formatCentavos(totais.sumTotalCentavos)}
+                                        </td>
+                                        <td className="py-3 px-4 text-right tabular-nums font-bold text-emerald-700">
+                                            {formatCentavos(totais.sumPagoCentavos)}
+                                        </td>
+                                        <td className="py-3 px-4 text-right font-bold">
+                                            <MoneyDisplay centavos={totais.sumAbertoCentavos} size="sm" className="font-bold" />
+                                        </td>
+                                        <td colSpan={2} className="py-3 px-4" />
+                                    </tr>
+                                </tfoot>
                             </table>
                         </div>
                     )}
@@ -1561,6 +1616,10 @@ export const ContasReceber: React.FC = () => {
                             <span className="font-semibold text-gray-700">{contasReceberDetalhadas.length}</span>
                         </p>
                         <div className="flex items-center gap-3 flex-wrap">
+                            <div className="flex items-center gap-2">
+                                <span className="text-sm text-gray-500">Total valor:</span>
+                                <span className="text-sm font-bold text-gray-900 dark:text-slate-100">{formatCentavos(totais.sumTotalCentavos)}</span>
+                            </div>
                             <div className="flex items-center gap-2">
                                 <span className="text-sm text-gray-500">Total em aberto:</span>
                                 <span className="text-sm font-bold text-red-600">{formatCentavos(totais.aberto + totais.vencido)}</span>

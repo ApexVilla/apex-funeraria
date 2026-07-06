@@ -29,6 +29,7 @@ import {
     sanitizarTextoMoedaInput,
 } from '../../lib/moedaInputUtils';
 import { normalizeSearchText } from '../../lib/textUtils';
+import { hojeCalendarioSp } from '../../lib/finCaixaSessaoMovimento';
 
 const TIPOS_DOCUMENTO: Array<{ value: string; label: string }> = [
     { value: 'fornecedor', label: 'Fornecedor' },
@@ -174,8 +175,10 @@ const parseValorFiltroCentavos = (input: string): number | null => {
 
 const addMesesCp = (yyyymmdd: string, meses: number): string => {
     const [y, m, d] = yyyymmdd.split('-').map(Number);
-    const data = new Date(y, m - 1 + meses, d);
-    return data.toISOString().split('T')[0];
+    // Trava no último dia do mês destino (venc. dia 31 + 1 mês = 28/29 fev, não 2-3 mar).
+    const ultimoDiaDestino = new Date(y, m + meses, 0).getDate();
+    const data = new Date(y, m - 1 + meses, Math.min(d, ultimoDiaDestino));
+    return `${data.getFullYear()}-${String(data.getMonth() + 1).padStart(2, '0')}-${String(data.getDate()).padStart(2, '0')}`;
 };
 
 const addMesesYmCp = (ym: string, meses: number): string => {
@@ -1195,7 +1198,7 @@ export const ContasPagar: React.FC = () => {
             setBaixasPeriodo(BAIXAS_PERIODO_VAZIO);
             return;
         }
-        const today = new Date().toISOString().slice(0, 10);
+        const today = hojeCalendarioSp();
         const de = dataInicio || today;
         const ate = dataFim || de;
         let cancelled = false;
@@ -1435,7 +1438,7 @@ export const ContasPagar: React.FC = () => {
     }, [filtered, mostrarColunaUnidade, filialEmpresaPorId, rotuloEmpresaConta, rotuloFilialConta]);
 
     const activePreset = useMemo(() => {
-        const todayStr = new Date().toISOString().slice(0, 10);
+        const todayStr = hojeCalendarioSp();
         const range3 = obterUltimosMeses(3);
         const range6 = obterUltimosMeses(6);
         const rangeAno = obterAnoAtual();
@@ -1821,7 +1824,7 @@ export const ContasPagar: React.FC = () => {
                             <Button
                                 variant={activePreset === 'hoje' ? 'primary' : 'outline'}
                                 onClick={() => {
-                                    const todayStr = new Date().toISOString().slice(0, 10);
+                                    const todayStr = hojeCalendarioSp();
                                     setDataInicio(todayStr);
                                     setDataFim(todayStr);
                                 }}

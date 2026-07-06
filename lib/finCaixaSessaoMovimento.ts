@@ -14,6 +14,10 @@ export const dataCalendarioSp = (iso?: string | null): string => {
     return parsed.toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' });
 };
 
+/** Hoje (YYYY-MM-DD) no dia civil de America/Sao_Paulo — nunca usar toISOString(), que vira o dia às 21h locais. */
+export const hojeCalendarioSp = (): string =>
+    new Date().toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' });
+
 export const dataMovimentoEfetiva = (mov: CaixaMovimento) =>
     mov.data_movimentacao
         ? normalizarDataIso(mov.data_movimentacao)

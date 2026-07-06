@@ -27,6 +27,7 @@ import { useFilial } from '../../lib/FilialContext';
 import { supabase } from '../../lib/supabase';
 import { parseOfx, type OfxParsedData, type OfxTransaction } from '../../lib/ofxParser';
 import { detectarFormatoImportacao, parseCnab400SicrediRetorno } from '../../lib/cnab400SicrediRetorno';
+import { hojeCalendarioSp } from '../../lib/finCaixaSessaoMovimento';
 
 interface ContaReceberLookup {
     id: string;
@@ -753,7 +754,7 @@ export const ImportacaoOfx: React.FC = () => {
                         p_empresa_id: empresaId,
                     });
                     const codigo = typeof codigoData === 'string' && codigoData.trim() ? codigoData : `CR-${Date.now()}`;
-                    const hoje = new Date().toISOString().slice(0, 10);
+                    const hoje = hojeCalendarioSp();
                     const { error: novaContaError } = await supabase.from('fin_contas_receber').insert({
                         empresa_id: empresaId,
                         codigo,

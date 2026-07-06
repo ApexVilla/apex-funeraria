@@ -116,7 +116,7 @@ function SidebarLogo({
   if (expanded) {
     return (
       <div className="flex-1 min-w-0">
-        <div className="inline-flex max-w-full items-center rounded-lg bg-white px-2.5 py-1.5">
+        <div className="sidebar-logo-bg inline-flex max-w-full items-center rounded-lg px-2.5 py-1.5">
           <img
             src={src}
             alt={alt}
@@ -130,7 +130,7 @@ function SidebarLogo({
   }
 
   return (
-    <div className="mx-auto flex h-10 w-10 flex-shrink-0 items-center justify-center overflow-hidden rounded-lg bg-white">
+    <div className="sidebar-logo-bg mx-auto flex h-10 w-10 flex-shrink-0 items-center justify-center overflow-hidden rounded-lg">
       <img
         src={src}
         alt={alt}

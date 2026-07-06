@@ -272,7 +272,7 @@ type RawBaixaReceber = {
     } | null;
 };
 
-/** Baixa de conta a pagar com título (inner join) — fonte do DRE por data de pagamento. */
+/** Baixa de conta a pagar com título (inner join) — fonte do DRE por data de pagamento (regime de caixa). */
 type RawBaixaPagar = {
     id: string;
     valor_pago_centavos: number;
@@ -312,6 +312,23 @@ function baixasPagarParaRawPagaveis(baixas: RawBaixaPagar[]): RawPagavel[] {
             data_baixa: b.data_baixa,
         };
     });
+}
+
+async function fetchSupabasePaginado<T>(
+    buildQuery: (from: number, to: number) => Promise<{ data: unknown; error: unknown }>,
+    pageSize = 1000,
+    maxRows = 50000,
+): Promise<T[]> {
+    const merged: T[] = [];
+    for (let offset = 0; offset < maxRows; offset += pageSize) {
+        const { data, error } = await buildQuery(offset, offset + pageSize - 1);
+        if (error) throw error;
+        const rows = (data as T[] | null) || [];
+        if (!rows.length) break;
+        merged.push(...rows);
+        if (rows.length < pageSize) break;
+    }
+    return merged;
 }
 
 function baixasReceberParaRawRecebiveis(baixas: RawBaixaReceber[]): RawRecebivel[] {
@@ -742,9 +759,19 @@ export const DRE: React.FC = () => {
     }, [allMovimentacoes, periodo, empresaIdsDrilldown]);
 
     const loadDRE = useCallback(async () => {
+        const { inicio, fim } = periodo;
+        // Período personalizado incompleto (campo de data apagado): não consulta com data vazia.
+        if (!inicio || !fim || inicio > fim) {
+            setAllRecebiveis([]);
+            setAllPagaveis([]);
+            setAllMovimentacoes([]);
+            setDrePorUnidade(new Map());
+            setDreConsolidado(emptyDREData());
+            setLoading(false);
+            return;
+        }
         setLoading(true);
         try {
-            const { inicio, fim } = periodo;
             const idsAlvo = multiUnidade ? empresaIdsScope : [empresaId];
 
             let queryInicio = inicio;
@@ -755,7 +782,7 @@ export const DRE: React.FC = () => {
                 queryFim = `${ano}-12-31`;
             }
 
-            const [recRes, despRes, movRes] = await Promise.all([
+            const [recRes, baixasPagarRows, movRes] = await Promise.all([
                 (() => {
                     let q = supabase
                         .from('fin_contas_receber_baixas')
@@ -779,11 +806,12 @@ export const DRE: React.FC = () => {
                         .eq('estornada', false)
                         .is('fin_contas_receber.deleted_at', null)
                         .gte('data_baixa', queryInicio)
-                        .lte('data_baixa', queryFim);
+                        .lte('data_baixa', queryFim)
+                        .order('id', { ascending: true });
                     if (shouldFilterByFilial && filialId) q = q.eq('fin_contas_receber.filial_id', filialId);
-                    return q;
+                    return fetchSupabasePaginado<RawBaixaReceber>(async (from, to) => await q.range(from, to));
                 })(),
-                (() => {
+                fetchSupabasePaginado<RawBaixaPagar>(async (from, to) => {
                     let q = supabase
                         .from('fin_contas_pagar_baixas')
                         .select(`
@@ -807,27 +835,29 @@ export const DRE: React.FC = () => {
                         .eq('estornada', false)
                         .is('fin_contas_pagar.deleted_at', null)
                         .gte('data_baixa', queryInicio)
-                        .lte('data_baixa', queryFim);
+                        .lte('data_baixa', queryFim)
+                        .order('id', { ascending: true });
                     if (shouldFilterByFilial && filialId) {
                         q = q.eq('fin_contas_pagar.filial_id', filialId);
                     }
-                    return q;
-                })(),
+                    return await q.range(from, to);
+                }),
                 (() => {
                     let q = supabase
                         .from('fin_movimentacoes')
                         .select('id, tipo, descricao, valor_centavos, data_competencia, empresa_id')
                         .in('empresa_id', idsAlvo)
                         .gte('data_competencia', queryInicio)
-                        .lte('data_competencia', queryFim);
+                        .lte('data_competencia', queryFim)
+                        .order('id', { ascending: true });
                     if (shouldFilterByFilial && filialId) q = q.eq('filial_id', filialId);
-                    return q;
+                    return fetchSupabasePaginado<RawMovimentacao>(async (from, to) => await q.range(from, to));
                 })(),
             ]);
 
-            const recebiveis = baixasReceberParaRawRecebiveis((recRes.data || []) as RawBaixaReceber[]);
-            const pagaveis = baixasPagarParaRawPagaveis((despRes.data || []) as RawBaixaPagar[]);
-            const movimentacoes = (movRes.data || []) as RawMovimentacao[];
+            const recebiveis = baixasReceberParaRawRecebiveis(recRes);
+            const pagaveis = baixasPagarParaRawPagaveis(baixasPagarRows);
+            const movimentacoes = movRes;
 
             setAllRecebiveis(recebiveis);
             setAllPagaveis(pagaveis);
@@ -1126,8 +1156,8 @@ export const DRE: React.FC = () => {
                 title="DRE"
                 subtitle={
                     multiUnidade
-                        ? `${periodo.label} · Visão consolidada do grupo (${unidadesOrdenadas.length} unidades)`
-                        : `${periodo.label} · ${empresaNomePorId.get(empresaId) || 'Unidade'}`
+                        ? `${periodo.label} · Regime de caixa (data do pagamento/recebimento) · Visão consolidada do grupo (${unidadesOrdenadas.length} unidades)`
+                        : `${periodo.label} · Regime de caixa (data do pagamento/recebimento) · ${empresaNomePorId.get(empresaId) || 'Unidade'}`
                 }
                 actionButton={
                     <div className="flex gap-2 print:hidden">
@@ -1175,7 +1205,16 @@ export const DRE: React.FC = () => {
                 )}
                 {modo !== 'anual' && modo !== 'personalizado' && (
                     <div className="w-full md:w-44">
-                        <Select value={mes} onChange={(e) => setMes(Number(e.target.value))}>
+                        <Select
+                            value={
+                                modo === 'trimestral'
+                                    ? (Math.ceil(mes / 3) - 1) * 3 + 1
+                                    : modo === 'semestral'
+                                        ? (mes <= 6 ? 1 : 7)
+                                        : mes
+                            }
+                            onChange={(e) => setMes(Number(e.target.value))}
+                        >
                             {modo === 'mensal' && meses.map(m => (
                                 <option key={m.mes} value={m.mes}>{m.label}</option>
                             ))}
@@ -1785,7 +1824,7 @@ export const DRE: React.FC = () => {
                                     />
                                     <Legend wrapperStyle={{ fontSize: '12px', paddingTop: '12px' }} />
                                     <Bar dataKey="receitas" name="Receita Bruta" fill="#3b82f6" radius={[4, 4, 0, 0]} />
-                                    <Bar dataKey="despesas" name="Total Pago (Despesas)" fill="#ef4444" radius={[4, 4, 0, 0]} />
+                                    <Bar dataKey="despesas" name="Total Despesas (competência)" fill="#ef4444" radius={[4, 4, 0, 0]} />
                                     <Line type="monotone" dataKey="resultado" name="Resultado Líquido" stroke="#10b981" strokeWidth={3} dot={{ r: 4 }} activeDot={{ r: 6 }} />
                                 </ComposedChart>
                             </ResponsiveContainer>

@@ -38,6 +38,15 @@ html.dark body {
 }
 /* Fundos */
 html.dark .bg-white         { background-color: #1e293b !important; }
+/* Logo na sidebar: mantém fundo claro para contraste com imagens escuras */
+.sidebar-logo-bg {
+  background-color: #ffffff;
+  box-shadow: 0 0 0 1px rgb(15 23 42 / 0.08);
+}
+html.dark .sidebar-logo-bg {
+  background-color: #ffffff !important;
+  box-shadow: 0 0 0 1px rgb(255 255 255 / 0.14);
+}
 html.dark .bg-gray-50       { background-color: #0f172a !important; }
 html.dark .bg-gray-100      { background-color: #1e293b !important; }
 html.dark .bg-gray-200      { background-color: #334155 !important; }
@@ -51,7 +60,7 @@ html.dark .text-gray-800    { color: #e2e8f0 !important; }
 html.dark .text-gray-700    { color: #cbd5e1 !important; }
 html.dark .text-gray-600    { color: #94a3b8 !important; }
 html.dark .text-gray-500    { color: #64748b !important; }
-html.dark .text-gray-400    { color: #475569 !important; }
+html.dark .text-gray-400    { color: #94a3b8 !important; }
 html.dark .text-slate-900   { color: #f1f5f9 !important; }
 html.dark .text-slate-800   { color: #e2e8f0 !important; }
 html.dark .text-slate-700   { color: #cbd5e1 !important; }
@@ -64,6 +73,8 @@ html.dark .text-slate-100   { color: #f1f5f9 !important; }
 html.dark .text-slate-950   { color: #f8fafc !important; }
 /* Tons slate usados no código fora da escala padrão do Tailwind */
 html.dark .text-slate-750   { color: #cbd5e1 !important; }
+html.dark .text-slate-650   { color: #94a3b8 !important; }
+html.dark .text-slate-850   { color: #f1f5f9 !important; }
 html.dark .text-slate-450   { color: #94a3b8 !important; }
 /* Fundos slate */
 html.dark .bg-slate-50         { background-color: #1e293b !important; }
@@ -119,6 +130,51 @@ html.dark [class*="rounded"][class*="border"] {
 }
 /* Cabeçalho de tabelas */
 html.dark .bg-gray-50.border-b { background-color: #0f172a !important; }
+/* Linhas selecionadas em listas (ex.: propostas) */
+html.dark tr.bg-blue-50,
+html.dark tr[class*="bg-blue-50"] {
+  background-color: rgb(30 58 95 / 0.45) !important;
+}
+html.dark tr[class*="ring-blue-100"] {
+  --tw-ring-color: rgb(30 58 138 / 0.55) !important;
+}
+/* Badges claros em modo escuro — manter contraste do texto */
+html.dark .bg-red-100 { background-color: rgb(127 29 29 / 0.35) !important; }
+html.dark .text-red-800 { color: #fecaca !important; }
+html.dark .border-red-200 { border-color: rgb(248 113 113 / 0.35) !important; }
+html.dark .bg-amber-100 { background-color: rgb(120 53 15 / 0.35) !important; }
+html.dark .text-amber-800 { color: #fde68a !important; }
+html.dark .bg-emerald-100 { background-color: rgb(6 78 59 / 0.35) !important; }
+html.dark .text-emerald-800 { color: #a7f3d0 !important; }
+html.dark .bg-blue-100 { background-color: rgb(30 58 138 / 0.35) !important; }
+html.dark .text-blue-800 { color: #bfdbfe !important; }
+html.dark .border-blue-200 { border-color: rgb(96 165 250 / 0.35) !important; }
+/* Tabelas list-table — fundo escuro garantido (o dark: no @apply nem sempre compila) */
+html.dark .list-table-shell {
+  background-color: #1e293b !important;
+  border-color: #334155 !important;
+}
+html.dark .list-table {
+  background-color: #1e293b !important;
+  color: #e2e8f0;
+}
+html.dark .list-table tbody tr {
+  background-color: #1e293b;
+}
+html.dark .list-table tbody tr:hover {
+  background-color: #334155 !important;
+}
+html.dark .list-table td {
+  color: #cbd5e1 !important;
+}
+html.dark .list-table .divide-slate-100 > * + *,
+html.dark .list-table.divide-y > * + * {
+  border-color: #334155 !important;
+}
+html.dark .text-gray-300 { color: #94a3b8 !important; }
+html.dark .hover\:text-blue-600:hover { color: #60a5fa !important; }
+html.dark .text-emerald-600 { color: #34d399 !important; }
+html.dark .hover\:text-emerald-700:hover { color: #6ee7b7 !important; }
 /* Ring de foco */
 html.dark .focus\:bg-white:focus { background-color: #1e293b !important; }
 
@@ -155,7 +211,7 @@ html.dark .focus\:bg-white:focus { background-color: #1e293b !important; }
   .focus\:ring-accent\/20:focus { --tw-ring-color: color-mix(in srgb, var(--accent-color), transparent 80%) !important; }
 
   .list-table-shell {
-    @apply bg-white rounded-lg border border-slate-200 shadow-sm overflow-hidden;
+    @apply bg-white dark:bg-slate-800 rounded-lg border border-slate-200 dark:border-slate-700 shadow-sm overflow-hidden;
   }
 
   .list-table {
@@ -171,15 +227,15 @@ html.dark .focus\:bg-white:focus { background-color: #1e293b !important; }
   }
 
   .list-table tbody {
-    @apply divide-y divide-slate-100;
+    @apply divide-y divide-slate-100 dark:divide-slate-700;
   }
 
   .list-table td {
-    @apply px-4 py-3 text-slate-700;
+    @apply px-4 py-3 text-slate-700 dark:text-slate-300;
   }
 
   .list-table tbody tr {
-    @apply hover:bg-blue-50/40 transition-colors;
+    @apply hover:bg-blue-50/40 dark:hover:bg-blue-950/30 transition-colors;
   }
 }
 

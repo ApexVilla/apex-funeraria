@@ -538,7 +538,7 @@ export const FinanceiroProvider: React.FC<{ children: React.ReactNode }> = ({ ch
             }
 
             if (filters?.status) {
-                const hojeIsoCr = new Date().toISOString().slice(0, 10);
+                const hojeIsoCr = dataHojeIsoLocal();
                 if (filters.status === 'vencido') {
                     query = query.or(
                         `status.eq.vencido,and(status.in.(aberto,pago_parcial,pendente),data_vencimento.lt.${hojeIsoCr})`,
@@ -593,7 +593,7 @@ export const FinanceiroProvider: React.FC<{ children: React.ReactNode }> = ({ ch
                     fin_plano_contas ( codigo, nome )
                 `;
 
-            const hojeIso = new Date().toISOString().slice(0, 10);
+            const hojeIso = dataHojeIsoLocal();
             const searchTermEarly = filters?.search_term?.trim();
             const buscaAtiva = !!searchTermEarly && searchTermEarly.length >= 2;
             const filtroDataCampo = filters?.filtro_data_campo === 'recebimento' ? 'recebimento' : 'vencimento';
@@ -988,7 +988,7 @@ export const FinanceiroProvider: React.FC<{ children: React.ReactNode }> = ({ ch
                 {
                     dados_novos: {
                         valor_pago_centavos: params.valor_pago_centavos,
-                        data_pagamento: params.data_pagamento || new Date().toISOString().slice(0, 10),
+                        data_pagamento: params.data_pagamento || dataHojeIsoLocal(),
                         pix_mesmo_pagador: params.pix_mesmo_pagador,
                         pix_nome_pagador: params.pix_nome_pagador,
                     },
@@ -1091,7 +1091,7 @@ export const FinanceiroProvider: React.FC<{ children: React.ReactNode }> = ({ ch
                 .single();
             if (fetchErr) throw fetchErr;
 
-            const hoje = new Date().toISOString().slice(0, 10);
+            const hoje = dataHojeIsoLocal();
             const novoStatus = novaDataVencimento < hoje ? 'vencido' : 'aberto';
             const dataAntiga = String(atual.data_vencimento || '').slice(0, 10);
             const linhaProrrog = `[${new Date().toLocaleString('pt-BR')}] Prorrogado de ${dataAntiga} para ${novaDataVencimento}${motivo?.trim() ? `: ${motivo.trim()}` : ''}`;
@@ -1162,7 +1162,7 @@ export const FinanceiroProvider: React.FC<{ children: React.ReactNode }> = ({ ch
                 const { data, error: rpcError } = await supabase.rpc('fn_gerar_mensalidades_com_historico', {
                     p_assinatura_id: assinaturaId,
                     p_ate_vencimento: ateVencimento.slice(0, 10),
-                    p_data_pagamento: (dataPagamento || new Date().toISOString().slice(0, 10)).slice(0, 10),
+                    p_data_pagamento: (dataPagamento || dataHojeIsoLocal()).slice(0, 10),
                     p_meses_futuros: mesesFuturos,
                 });
                 if (rpcError) throw rpcError;

@@ -27,6 +27,7 @@ import { useAuth } from '../../lib/AuthContext';
 import { ensureContasDestinoBaixa } from '../../lib/finCaixaAutoAbertura';
 import { inferirTipoDocumentoPagar } from '../../lib/inferirTipoDocumento';
 import { clienteEhFuncionario } from '../../lib/clienteFuncionario';
+import { dataHojeIsoLocal } from '../../lib/contratoDatas';
 import {
     formatarMoedaInputAoSair,
     parseInputMoedaParaCentavos,
@@ -53,12 +54,14 @@ export interface NovaContaPagarModalProps {
     };
 }
 
-const hoje = () => new Date().toISOString().split('T')[0];
+const hoje = () => dataHojeIsoLocal();
 
 const addMeses = (yyyymmdd: string, meses: number): string => {
     const [y, m, d] = yyyymmdd.split('-').map(Number);
-    const data = new Date(y, m - 1 + meses, d);
-    return data.toISOString().split('T')[0];
+    // Trava no último dia do mês destino (venc. dia 31 + 1 mês = 28/29 fev, não 2-3 mar).
+    const ultimoDiaDestino = new Date(y, m + meses, 0).getDate();
+    const data = new Date(y, m - 1 + meses, Math.min(d, ultimoDiaDestino));
+    return `${data.getFullYear()}-${String(data.getMonth() + 1).padStart(2, '0')}-${String(data.getDate()).padStart(2, '0')}`;
 };
 
 const hojeYm = () => hoje().slice(0, 7);
