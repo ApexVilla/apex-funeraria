@@ -28,7 +28,9 @@ import {
     parseInputMoedaParaCentavos,
     sanitizarTextoMoedaInput,
 } from '../../lib/moedaInputUtils';
+import { useChartTheme } from '../../lib/useChartTheme';
 import { normalizeSearchText } from '../../lib/textUtils';
+import { ymToDisplayBr } from '../../lib/dateInputUtils';
 import { hojeCalendarioSp } from '../../lib/finCaixaSessaoMovimento';
 
 const TIPOS_DOCUMENTO: Array<{ value: string; label: string }> = [
@@ -50,7 +52,19 @@ const TIPOS_DOCUMENTO: Array<{ value: string; label: string }> = [
     { value: 'outros', label: 'Outros' },
 ];
 
-type ColumnFilterKey = 'codigo' | 'fornecedor' | 'unidade' | 'tipo' | 'natureza' | 'vencimento' | 'pagamento' | 'valor' | 'status' | 'nf';
+type ColumnFilterKey =
+    | 'codigo'
+    | 'fornecedor'
+    | 'unidade'
+    | 'tipo'
+    | 'natureza'
+    | 'vencimento'
+    | 'pagamento'
+    | 'valor'
+    | 'status'
+    | 'nf'
+    | 'usuario_lancamento'
+    | 'data_lancamento';
 
 const COLUMN_FILTER_LABELS: Record<ColumnFilterKey, string> = {
     codigo: 'Código',
@@ -63,6 +77,8 @@ const COLUMN_FILTER_LABELS: Record<ColumnFilterKey, string> = {
     valor: 'Valor',
     status: 'Status',
     nf: 'NF',
+    usuario_lancamento: 'Usuário de lançamento',
+    data_lancamento: 'Data de lançamento',
 };
 
 type FiltroDataCampo = 'vencimento' | 'pagamento';
@@ -92,6 +108,8 @@ const EMPTY_COLUMN_FILTERS: Record<ColumnFilterKey, string[]> = {
     valor: [],
     status: [],
     nf: [],
+    usuario_lancamento: [],
+    data_lancamento: [],
 };
 
 const formatDataBr = (iso?: string | null) =>
@@ -117,9 +135,10 @@ type ChartCategoryTickProps = {
     y?: number;
     payload?: { value?: string };
     maxChars?: number;
+    fill?: string;
 };
 
-const ChartCategoryTick = ({ x = 0, y = 0, payload, maxChars = 32 }: ChartCategoryTickProps) => {
+const ChartCategoryTick = ({ x = 0, y = 0, payload, maxChars = 32, fill = '#1e293b' }: ChartCategoryTickProps) => {
     const raw = String(payload?.value ?? '');
     const label = raw.length > maxChars ? `${raw.slice(0, maxChars - 1)}…` : raw;
     return (
@@ -128,7 +147,7 @@ const ChartCategoryTick = ({ x = 0, y = 0, payload, maxChars = 32 }: ChartCatego
             y={y}
             dy={5}
             textAnchor="end"
-            fill="#1e293b"
+            fill={fill}
             fontSize={12}
             fontWeight={700}
             fontFamily="system-ui, -apple-system, sans-serif"
@@ -193,7 +212,7 @@ interface EditarContaPagarModalProps {
     conta: ContaPagar;
     onClose: () => void;
     onSuccess: () => void;
-    updateContaPagar: (id: string, data: Partial<ContaPagar>) => Promise<boolean>;
+    updateContaPagar: (id: string, data: Partial<ContaPagar>, motivo?: string) => Promise<boolean>;
     criarContaPagar: (data: Partial<ContaPagar>) => Promise<string | null>;
     planoContas: PlanoContaItem[];
 }
@@ -212,6 +231,9 @@ const EditarContaPagarModal: React.FC<EditarContaPagarModalProps> = ({
     const podeParcelar =
         conta.valor_pago_centavos === 0 && (conta.total_parcelas || 1) <= 1;
 
+    const somenteCompetencia =
+        conta.valor_pago_centavos > 0 || ['pago', 'pago_parcial'].includes(conta.status);
+
     const [descricao, setDescricao] = useState(stripSufixoParcelaCp(conta.descricao || ''));
     const [fornecedorNome, setFornecedorNome] = useState(conta.fornecedor_nome || '');
     const [planoContaId, setPlanoContaId] = useState(conta.plano_conta_id || '');
@@ -222,7 +244,7 @@ const EditarContaPagarModal: React.FC<EditarContaPagarModalProps> = ({
     );
     const [valorInput, setValorInput] = useState(centavosParaInputMoeda(conta.valor_original_centavos));
     const [valorCentavos, setValorCentavos] = useState(conta.valor_original_centavos);
-    const [observacoes, setObservacoes] = useState((conta as { observacoes?: string }).observacoes || '');
+    const [motivoAlteracao, setMotivoAlteracao] = useState('');
     const [parcelar, setParcelar] = useState(false);
     const [totalParcelas, setTotalParcelas] = useState(2);
 
@@ -277,6 +299,26 @@ const EditarContaPagarModal: React.FC<EditarContaPagarModalProps> = ({
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
         setError(null);
+
+        if (!dataCompetenciaYm) { setError('Informe a competência (mês/ano).'); return; }
+
+        if (somenteCompetencia) {
+            setSaving(true);
+            try {
+                const ok = await updateContaPagar(
+                    conta.id,
+                    { data_competencia: `${dataCompetenciaYm}-01` },
+                    motivoAlteracao.trim() || undefined,
+                );
+                if (ok) onSuccess();
+                else setError('Erro ao salvar a competência.');
+            } catch (err) {
+                setError(err instanceof Error ? err.message : 'Erro ao salvar.');
+            } finally {
+                setSaving(false);
+            }
+            return;
+        }
 
         if (!descricao.trim()) { setError('Informe uma descrição.'); return; }
         if (!dataVencimento) { setError('Informe a data de vencimento.'); return; }
@@ -343,12 +385,11 @@ const EditarContaPagarModal: React.FC<EditarContaPagarModalProps> = ({
                         total_parcelas: nParcelas,
                         status: 'aberto',
                         requer_aprovacao: conta.requer_aprovacao,
-                        observacoes: observacoes.trim() || undefined,
                         ...(conta.filial_id ? { filial_id: conta.filial_id } : {}),
                     };
 
                     if (i === 0) {
-                        const ok = await updateContaPagar(conta.id, payload);
+                        const ok = await updateContaPagar(conta.id, payload, motivoAlteracao.trim() || undefined);
                         if (!ok) throw new Error('Erro ao atualizar a primeira parcela.');
                     } else {
                         const newId = await criarContaPagar(payload);
@@ -366,10 +407,9 @@ const EditarContaPagarModal: React.FC<EditarContaPagarModalProps> = ({
                 numero_nota_fiscal: numeroNF.trim() || undefined,
                 plano_conta_id: planoContaId,
                 data_vencimento: dataVencimento,
-                data_competencia: dataCompetenciaYm ? `${dataCompetenciaYm}-01` : undefined,
+                data_competencia: dataCompetenciaYm ? `${dataCompetenciaYm}-01` : conta.data_competencia,
                 valor_original_centavos: valorCentavos,
-                observacoes: observacoes.trim() || undefined,
-            } as Partial<ContaPagar> & { observacoes?: string });
+            }, motivoAlteracao.trim() || undefined);
             if (ok) {
                 onSuccess();
             } else {
@@ -410,6 +450,25 @@ const EditarContaPagarModal: React.FC<EditarContaPagarModalProps> = ({
                             </div>
                         )}
 
+                        {somenteCompetencia ? (
+                            <>
+                                <div className="p-3 bg-amber-50 border border-amber-200 text-amber-900 rounded-md text-xs font-medium">
+                                    Este título já possui pagamento. Altere apenas a <strong>competência</strong> (mês/ano contábil).
+                                    {conta.data_competencia && (
+                                        <span className="block mt-1 text-amber-800">
+                                            Atual: <strong>{ymToDisplayBr(conta.data_competencia.slice(0, 7))}</strong>
+                                        </span>
+                                    )}
+                                </div>
+                                <CompetenciaMesAnoInput
+                                    label="Competência (Mês/Ano) *"
+                                    value={dataCompetenciaYm}
+                                    onChange={setDataCompetenciaYm}
+                                    required
+                                />
+                            </>
+                        ) : (
+                            <>
                         <div className="space-y-1">
                             <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wide">Descrição *</label>
                             <input
@@ -476,24 +535,27 @@ const EditarContaPagarModal: React.FC<EditarContaPagarModalProps> = ({
                                 />
                             </div>
                             <CompetenciaMesAnoInput
-                                label="Competência (Mês/Ano)"
+                                label="Competência (Mês/Ano) *"
                                 value={dataCompetenciaYm}
                                 onChange={setDataCompetenciaYm}
+                                required
                             />
                         </div>
+                            </>
+                        )}
 
                         <div className="space-y-1">
-                            <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wide">Observações</label>
+                            <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wide">Motivo da alteração</label>
                             <textarea
-                                value={observacoes}
-                                onChange={(e) => setObservacoes(e.target.value)}
+                                value={motivoAlteracao}
+                                onChange={(e) => setMotivoAlteracao(e.target.value)}
                                 rows={3}
                                 className="w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm focus:border-slate-800 focus:ring-2 focus:ring-slate-100 outline-none resize-none placeholder:text-slate-400"
-                                placeholder="Notas internas sobre essa alteração..."
+                                placeholder="Opcional — ficará registrado no histórico de alterações do título."
                             />
                         </div>
 
-                        {podeParcelar && (
+                        {podeParcelar && !somenteCompetencia && (
                             <div className="rounded-md border border-slate-200 bg-slate-100/40 p-4 space-y-3">
                                 <label className="flex items-center gap-3 cursor-pointer">
                                     <input
@@ -580,7 +642,9 @@ const EditarContaPagarModal: React.FC<EditarContaPagarModalProps> = ({
                             ) : (
                                 <Save className="h-4 w-4" />
                             )}
-                            {saving ? 'Salvando…' : parcelar && podeParcelar && totalParcelas > 1
+                            {saving ? 'Salvando…' : somenteCompetencia
+                                ? 'Salvar competência'
+                                : parcelar && podeParcelar && totalParcelas > 1
                                 ? `Salvar e criar ${totalParcelas} parcelas`
                                 : 'Salvar Alterações'}
                         </button>
@@ -621,6 +685,7 @@ function obterAnoAtual(): { inicio: string; fim: string } {
 }
 
 export const ContasPagar: React.FC = () => {
+    const chartTheme = useChartTheme();
     const { contasPagar, loadContasPagar, loading, estornarContaPagar, excluirContaPagar, updateContaPagar, criarContaPagar, planoContas, loadPlanoContas } = useFinanceiro();
     const { dataRevision, isTodasFiliais, filiais } = useFilial();
     const { dataRevisionEmpresa, empresaIdEfetivo, empresasDoGrupo, empresaIdsParaFiltro, visaoTodasEmpresasGrupo } = useEmpresaContextoAtivo();
@@ -1044,6 +1109,10 @@ export const ContasPagar: React.FC = () => {
                 return contaPagarStatusEfetivo(cp) || '—';
             case 'nf':
                 return (cp.numero_nota_fiscal || '').trim() || '—';
+            case 'usuario_lancamento':
+                return nomeUsuarioLancamento(cp);
+            case 'data_lancamento':
+                return formatDataHoraBr(cp.created_at);
             default:
                 return '';
         }
@@ -2065,8 +2134,8 @@ export const ContasPagar: React.FC = () => {
                                     <th className="text-right">Aberto</th>
                                     <ThComFiltro label="Status" columnKey="status" align="center" />
                                     <ThComFiltro label="NF" columnKey="nf" />
-                                    <th>Usuário de lançamento</th>
-                                    <th>Data de lançamento</th>
+                                    <ThComFiltro label="Usuário de lançamento" columnKey="usuario_lancamento" />
+                                    <ThComFiltro label="Data de lançamento" columnKey="data_lancamento" />
                                 </tr>
                             </thead>
                             <tbody>
@@ -2312,9 +2381,15 @@ export const ContasPagar: React.FC = () => {
                                         </Pie>
                                         <RechartsTooltip
                                             formatter={(value: number, name: string) => [formatCentavos(value), name]}
-                                            contentStyle={{ fontSize: 12, borderRadius: 8, border: '1px solid #e2e8f0' }}
+                                            contentStyle={{
+                                                fontSize: 12,
+                                                borderRadius: 8,
+                                                border: `1px solid ${chartTheme.tooltip.border}`,
+                                                backgroundColor: chartTheme.tooltip.background,
+                                                color: chartTheme.tooltip.labelColor,
+                                            }}
                                         />
-                                        <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 11 }} />
+                                        <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 11, color: chartTheme.legend }} />
                                     </PieChart>
                                 </ResponsiveContainer>
                             ) : (
@@ -2379,15 +2454,15 @@ export const ContasPagar: React.FC = () => {
                                             barCategoryGap="30%"
                                             margin={{ top: 16, right: 16, left: 16, bottom: 8 }}
                                         >
-                                            <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.15)" vertical={false} />
+                                            <CartesianGrid strokeDasharray="3 3" stroke={chartTheme.grid} vertical={false} />
                                             <XAxis
                                                 dataKey="label"
-                                                tick={{ fill: '#64748b', fontSize: 11 }}
+                                                tick={{ fill: chartTheme.tick, fontSize: 11 }}
                                                 tickLine={false}
                                                 axisLine={false}
                                             />
                                             <YAxis
-                                                tick={{ fill: '#64748b', fontSize: 11 }}
+                                                tick={{ fill: chartTheme.tick, fontSize: 11 }}
                                                 tickLine={false}
                                                 axisLine={false}
                                                 tickFormatter={(v) => `R$ ${(v / 100).toLocaleString('pt-BR', { maximumFractionDigits: 0 })}`}
@@ -2397,12 +2472,13 @@ export const ContasPagar: React.FC = () => {
                                                 formatter={(value: number, name: string) => [formatCentavos(value), name]}
                                                 contentStyle={{
                                                     borderRadius: 8,
-                                                    border: '1px solid #e2e8f0',
-                                                    boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)',
-                                                    backgroundColor: '#fff',
+                                                    border: `1px solid ${chartTheme.tooltip.border}`,
+                                                    boxShadow: chartTheme.tooltip.shadow,
+                                                    backgroundColor: chartTheme.tooltip.background,
+                                                    color: chartTheme.tooltip.labelColor,
                                                 }}
                                             />
-                                            <Legend wrapperStyle={{ fontSize: 12, paddingTop: 12 }} iconType="square" iconSize={10} />
+                                            <Legend wrapperStyle={{ fontSize: 12, paddingTop: 12, color: chartTheme.legend }} iconType="square" iconSize={10} />
                                             <Bar dataKey="pago" name="Pago" fill="#10b981" stackId="a" radius={[0, 0, 0, 0]} />
                                             <Bar dataKey="jurosMulta" name="Juros/Multa" fill="#e11d48" stackId="a" radius={[0, 0, 0, 0]} />
                                             <Bar dataKey="aberto" name="Aberto" fill="#f59e0b" stackId="a" radius={[0, 0, 0, 0]} />
@@ -2437,10 +2513,10 @@ export const ContasPagar: React.FC = () => {
                                         layout="vertical"
                                         margin={{ top: 4, right: 72, left: 8, bottom: 4 }}
                                     >
-                                        <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" horizontal={false} />
+                                        <CartesianGrid strokeDasharray="3 3" stroke={chartTheme.grid} horizontal={false} />
                                         <XAxis
                                             type="number"
-                                            tick={{ fontSize: 11, fill: '#64748b', fontWeight: 500 }}
+                                            tick={{ fontSize: 11, fill: chartTheme.tick, fontWeight: 500 }}
                                             axisLine={false}
                                             tickLine={false}
                                             tickFormatter={(v) => `R$ ${(v / 100).toLocaleString('pt-BR', { maximumFractionDigits: 0 })}`}
@@ -2448,7 +2524,7 @@ export const ContasPagar: React.FC = () => {
                                         <YAxis
                                             type="category"
                                             dataKey="name"
-                                            tick={(props: any) => <ChartCategoryTick {...props} maxChars={18} />}
+                                            tick={(props: any) => <ChartCategoryTick {...props} maxChars={18} fill={chartTheme.categoryTick} />}
                                             axisLine={false}
                                             tickLine={false}
                                             width={130}
@@ -2456,15 +2532,22 @@ export const ContasPagar: React.FC = () => {
                                         />
                                         <RechartsTooltip
                                             formatter={(value: number) => [formatCentavos(value), 'Total']}
-                                            labelStyle={{ fontWeight: 700, color: '#1e293b', marginBottom: 4 }}
-                                            contentStyle={{ fontSize: 13, borderRadius: 8, border: '1px solid #e2e8f0', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.08)' }}
+                                            labelStyle={{ fontWeight: 700, color: chartTheme.tooltip.labelColor, marginBottom: 4 }}
+                                            contentStyle={{
+                                                fontSize: 13,
+                                                borderRadius: 8,
+                                                border: `1px solid ${chartTheme.tooltip.border}`,
+                                                boxShadow: chartTheme.tooltip.shadow,
+                                                backgroundColor: chartTheme.tooltip.background,
+                                                color: chartTheme.tooltip.labelColor,
+                                            }}
                                         />
                                         <Bar dataKey="valor" name="Total" fill="#8b5cf6" radius={[0, 4, 4, 0]} maxBarSize={26}>
                                             <LabelList
                                                 dataKey="valor"
                                                 position="right"
                                                 formatter={chartValorLabel}
-                                                style={{ fill: '#475569', fontSize: 11, fontWeight: 700 }}
+                                                style={{ fill: chartTheme.valueLabel, fontSize: 11, fontWeight: 700 }}
                                             />
                                         </Bar>
                                     </BarChart>
@@ -2484,10 +2567,10 @@ export const ContasPagar: React.FC = () => {
                                         layout="vertical"
                                         margin={{ top: 4, right: 72, left: 8, bottom: 4 }}
                                     >
-                                        <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" horizontal={false} />
+                                        <CartesianGrid strokeDasharray="3 3" stroke={chartTheme.grid} horizontal={false} />
                                         <XAxis
                                             type="number"
-                                            tick={{ fontSize: 11, fill: '#64748b', fontWeight: 500 }}
+                                            tick={{ fontSize: 11, fill: chartTheme.tick, fontWeight: 500 }}
                                             axisLine={false}
                                             tickLine={false}
                                             tickFormatter={(v) => `R$ ${(v / 100).toLocaleString('pt-BR', { maximumFractionDigits: 0 })}`}
@@ -2495,7 +2578,7 @@ export const ContasPagar: React.FC = () => {
                                         <YAxis
                                             type="category"
                                             dataKey="name"
-                                            tick={(props: any) => <ChartCategoryTick {...props} maxChars={28} />}
+                                            tick={(props: any) => <ChartCategoryTick {...props} maxChars={28} fill={chartTheme.categoryTick} />}
                                             axisLine={false}
                                             tickLine={false}
                                             width={200}
@@ -2503,15 +2586,22 @@ export const ContasPagar: React.FC = () => {
                                         />
                                         <RechartsTooltip
                                             formatter={(value: number) => [formatCentavos(value), 'Total']}
-                                            labelStyle={{ fontWeight: 700, color: '#1e293b', marginBottom: 4 }}
-                                            contentStyle={{ fontSize: 13, borderRadius: 8, border: '1px solid #e2e8f0', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.08)' }}
+                                            labelStyle={{ fontWeight: 700, color: chartTheme.tooltip.labelColor, marginBottom: 4 }}
+                                            contentStyle={{
+                                                fontSize: 13,
+                                                borderRadius: 8,
+                                                border: `1px solid ${chartTheme.tooltip.border}`,
+                                                boxShadow: chartTheme.tooltip.shadow,
+                                                backgroundColor: chartTheme.tooltip.background,
+                                                color: chartTheme.tooltip.labelColor,
+                                            }}
                                         />
                                         <Bar dataKey="valor" name="Total" fill="#3b82f6" radius={[0, 4, 4, 0]} maxBarSize={26}>
                                             <LabelList
                                                 dataKey="valor"
                                                 position="right"
                                                 formatter={chartValorLabel}
-                                                style={{ fill: '#475569', fontSize: 11, fontWeight: 700 }}
+                                                style={{ fill: chartTheme.valueLabel, fontSize: 11, fontWeight: 700 }}
                                             />
                                         </Bar>
                                     </BarChart>
@@ -2533,10 +2623,10 @@ export const ContasPagar: React.FC = () => {
                                     layout="vertical"
                                     margin={{ top: 4, right: 80, left: 8, bottom: 4 }}
                                 >
-                                    <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" horizontal={false} />
+                                    <CartesianGrid strokeDasharray="3 3" stroke={chartTheme.grid} horizontal={false} />
                                     <XAxis
                                         type="number"
-                                        tick={{ fontSize: 11, fill: '#64748b', fontWeight: 500 }}
+                                        tick={{ fontSize: 11, fill: chartTheme.tick, fontWeight: 500 }}
                                         axisLine={false}
                                         tickLine={false}
                                         tickFormatter={(v) => `R$ ${(v / 100).toLocaleString('pt-BR', { maximumFractionDigits: 0 })}`}
@@ -2544,7 +2634,7 @@ export const ContasPagar: React.FC = () => {
                                     <YAxis
                                         type="category"
                                         dataKey="name"
-                                        tick={(props: any) => <ChartCategoryTick {...props} maxChars={36} />}
+                                        tick={(props: any) => <ChartCategoryTick {...props} maxChars={36} fill={chartTheme.categoryTick} />}
                                         axisLine={false}
                                         tickLine={false}
                                         width={280}
@@ -2552,15 +2642,22 @@ export const ContasPagar: React.FC = () => {
                                     />
                                     <RechartsTooltip
                                         formatter={(value: number) => [formatCentavos(value), 'Total']}
-                                        labelStyle={{ fontWeight: 700, color: '#1e293b', marginBottom: 4 }}
-                                        contentStyle={{ fontSize: 13, borderRadius: 8, border: '1px solid #e2e8f0', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.08)' }}
+                                        labelStyle={{ fontWeight: 700, color: chartTheme.tooltip.labelColor, marginBottom: 4 }}
+                                        contentStyle={{
+                                            fontSize: 13,
+                                            borderRadius: 8,
+                                            border: `1px solid ${chartTheme.tooltip.border}`,
+                                            boxShadow: chartTheme.tooltip.shadow,
+                                            backgroundColor: chartTheme.tooltip.background,
+                                            color: chartTheme.tooltip.labelColor,
+                                        }}
                                     />
                                     <Bar dataKey="valor" name="Total" fill="#dc2626" radius={[0, 4, 4, 0]} maxBarSize={28}>
                                         <LabelList
                                             dataKey="valor"
                                             position="right"
                                             formatter={chartValorLabel}
-                                            style={{ fill: '#475569', fontSize: 11, fontWeight: 700 }}
+                                            style={{ fill: chartTheme.valueLabel, fontSize: 11, fontWeight: 700 }}
                                         />
                                     </Bar>
                                 </BarChart>
@@ -2582,10 +2679,10 @@ export const ContasPagar: React.FC = () => {
                                         data={dadosGraficos.porFilial}
                                         margin={{ top: 4, right: 80, left: 4, bottom: 4 }}
                                     >
-                                        <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.15)" horizontal={false} />
+                                        <CartesianGrid strokeDasharray="3 3" stroke={chartTheme.grid} horizontal={false} />
                                         <XAxis
                                             type="number"
-                                            tick={{ fill: '#64748b', fontSize: 10 }}
+                                            tick={{ fill: chartTheme.tick, fontSize: 10 }}
                                             tickLine={false}
                                             axisLine={false}
                                             tickFormatter={(v: number) => `R$ ${(v / 100).toLocaleString('pt-BR', { maximumFractionDigits: 0 })}`}
@@ -2593,16 +2690,23 @@ export const ContasPagar: React.FC = () => {
                                         <YAxis
                                             type="category"
                                             dataKey="name"
-                                            tick={{ fill: '#334155', fontSize: 11, fontWeight: 500 }}
+                                            tick={{ fill: chartTheme.categoryTick, fontSize: 11, fontWeight: 500 }}
                                             tickLine={false}
                                             axisLine={false}
                                             width={120}
                                         />
                                         <RechartsTooltip
                                             formatter={(value: number, name: string) => [formatCentavos(value), name]}
-                                            contentStyle={{ borderRadius: 8, border: '1px solid #e2e8f0', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)', backgroundColor: '#fff', fontSize: 12 }}
+                                            contentStyle={{
+                                                borderRadius: 8,
+                                                border: `1px solid ${chartTheme.tooltip.border}`,
+                                                boxShadow: chartTheme.tooltip.shadow,
+                                                backgroundColor: chartTheme.tooltip.background,
+                                                color: chartTheme.tooltip.labelColor,
+                                                fontSize: 12,
+                                            }}
                                         />
-                                        <Legend wrapperStyle={{ fontSize: 11, paddingTop: 8 }} iconType="square" iconSize={9} />
+                                        <Legend wrapperStyle={{ fontSize: 11, paddingTop: 8, color: chartTheme.legend }} iconType="square" iconSize={9} />
                                         <Bar dataKey="pago" name="Pago" fill="#10b981" stackId="s" maxBarSize={28} />
                                         <Bar dataKey="aberto" name="Aberto" fill="#f59e0b" stackId="s" maxBarSize={28} />
                                         <Bar dataKey="vencido" name="Vencido" fill="#ef4444" stackId="s" radius={[0, 4, 4, 0]} maxBarSize={28} />
@@ -2709,7 +2813,7 @@ export const ContasPagar: React.FC = () => {
                         Detalhes
                     </DropdownMenuItem>
 
-                        {['aberto', 'vencido', 'aprovado'].includes(selectedConta.status) && (
+                        {['aberto', 'vencido', 'aprovado', 'pago', 'pago_parcial'].includes(selectedConta.status) && (
                             <DropdownMenuItem
                                 onClick={() => {
                                     setShowEditarModal(true);

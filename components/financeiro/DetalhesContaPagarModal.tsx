@@ -18,12 +18,19 @@ import {
     FileCheck,
     Coins,
     Sparkles,
+    Pencil,
 } from 'lucide-react';
 import { ContaPagar, formatCentavos } from '../../lib/FinanceiroStore';
 import { StatusFinanceiroBadge } from './FinanceiroComponents';
 import { supabase } from '../../lib/supabase';
 import { rotuloFormaPagamento } from '../../lib/caixaFormaPagamento';
 import { imprimirReciboContaPagar } from '../../lib/ReciboService';
+import { ymToDisplayBr } from '../../lib/dateInputUtils';
+import {
+    listarAlteracoesContaPagar,
+    LABEL_CAMPO_CONTA_PAGAR,
+    type ContaPagarAlteracaoDto,
+} from '../../lib/finContaPagarAuditoriaService';
 
 interface DetalhesContaPagarModalProps {
     conta: ContaPagar;
@@ -116,6 +123,7 @@ export const DetalhesContaPagarModal: React.FC<DetalhesContaPagarModalProps> = (
     const [baixas, setBaixas] = useState<BaixaRow[]>([]);
     const [movCaixa, setMovCaixa] = useState<CaixaMovRow[]>([]);
     const [movFin, setMovFin] = useState<MovFinRow[]>([]);
+    const [alteracoes, setAlteracoes] = useState<ContaPagarAlteracaoDto[]>([]);
     const [userMap, setUserMap] = useState<Map<string, string>>(new Map());
     const [contaMap, setContaMap] = useState<Map<string, { nome: string; codigo: string }>>(new Map());
     const [formaMap, setFormaMap] = useState<Map<string, { nome: string; tipo: string }>>(new Map());
@@ -133,7 +141,7 @@ export const DetalhesContaPagarModal: React.FC<DetalhesContaPagarModalProps> = (
         setLoadingExtra(true);
         setErroExtra(null);
         try {
-            const [resBaixas, resCaixa, resFin, resTitulo] = await Promise.all([
+            const [resBaixas, resCaixa, resFin, resTitulo, resAlteracoes] = await Promise.all([
                 supabase
                     .from('fin_contas_pagar_baixas')
                     .select('id, created_at, data_baixa, valor_pago_centavos, valor_desconto_centavos, valor_juros_centavos, valor_multa_centavos, observacoes, tipo, forma_pagamento_id, conta_bancaria_id, created_by')
@@ -158,6 +166,7 @@ export const DetalhesContaPagarModal: React.FC<DetalhesContaPagarModalProps> = (
                     .eq('id', conta.id)
                     .eq('empresa_id', conta.empresa_id)
                     .maybeSingle(),
+                listarAlteracoesContaPagar(conta.id, conta.empresa_id),
             ]);
 
             if (resBaixas.error) throw resBaixas.error;
@@ -183,6 +192,7 @@ export const DetalhesContaPagarModal: React.FC<DetalhesContaPagarModalProps> = (
             setBaixas(listaBaixas);
             setMovCaixa(listaCaixa);
             setMovFin(listaFin);
+            setAlteracoes(resAlteracoes);
 
             const userIds: string[] = [];
             listaBaixas.forEach(b => {
@@ -193,6 +203,9 @@ export const DetalhesContaPagarModal: React.FC<DetalhesContaPagarModalProps> = (
             });
             listaFin.forEach(m => {
                 if (m.created_by) userIds.push(m.created_by);
+            });
+            resAlteracoes.forEach((a) => {
+                if (a.usuario_id) userIds.push(a.usuario_id);
             });
 
             const contaIds: string[] = [];
@@ -411,7 +424,7 @@ export const DetalhesContaPagarModal: React.FC<DetalhesContaPagarModalProps> = (
                                             <div>
                                                 <span className="text-[9px] text-slate-400 font-bold uppercase tracking-wider block">Mês de Competência</span>
                                                 <span className="text-xs font-semibold text-slate-700 font-mono mt-0.5 block">
-                                                    {new Date(conta.data_competencia + 'T05:00').toLocaleDateString('pt-BR')}
+                                                    {ymToDisplayBr(conta.data_competencia?.slice(0, 7)) || '—'}
                                                 </span>
                                             </div>
                                         </div>
@@ -712,6 +725,42 @@ export const DetalhesContaPagarModal: React.FC<DetalhesContaPagarModalProps> = (
                                                 </p>
                                             </div>
                                         </div>
+
+                                        {/* 1b. Alterações manuais no título */}
+                                        {alteracoes.map((alt) => {
+                                            const quem = alt.usuario_nome || (alt.usuario_id ? userMap.get(alt.usuario_id) : null);
+                                            const campoLabel = LABEL_CAMPO_CONTA_PAGAR[alt.campo_alterado] || alt.campo_alterado;
+                                            return (
+                                                <div key={alt.id} className="relative animate-in slide-in-from-left-2 duration-200">
+                                                    <div className="absolute -left-[35px] top-0 bg-violet-600 border-2 border-white rounded-md p-1.5 text-white shadow-md">
+                                                        <Pencil className="h-3.5 w-3.5 text-violet-200" />
+                                                    </div>
+                                                    <div className="space-y-1">
+                                                        <div className="flex justify-between items-center text-[9px] text-slate-400 font-extrabold uppercase tracking-widest font-mono">
+                                                            <span>Alteração do Título</span>
+                                                            <span>{formatarDataHora(alt.created_at)}</span>
+                                                        </div>
+                                                        <p className="text-xs font-extrabold text-slate-800 uppercase tracking-wide">
+                                                            {campoLabel}
+                                                        </p>
+                                                        <p className="text-xs text-slate-600 font-medium">
+                                                            De <strong className="text-slate-800">{alt.valor_anterior || '—'}</strong>
+                                                            {' '}para <strong className="text-violet-800">{alt.valor_novo || '—'}</strong>.
+                                                        </p>
+                                                        {(quem || alt.motivo) && (
+                                                            <div className="bg-slate-50/60 p-2.5 rounded border border-slate-200 text-[10px] text-slate-500 flex flex-col gap-1 font-medium">
+                                                                {quem && (
+                                                                    <span>Alterado por: <strong className="text-slate-800">{quem}</strong></span>
+                                                                )}
+                                                                {alt.motivo && (
+                                                                    <span>Motivo: <strong className="text-slate-700">{alt.motivo}</strong></span>
+                                                                )}
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            );
+                                        })}
 
                                         {/* 2. Baixas / Pagamentos (Quitações Milestones) */}
                                         {baixas.map((b, idx) => (

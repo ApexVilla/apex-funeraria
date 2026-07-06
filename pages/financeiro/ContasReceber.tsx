@@ -1069,7 +1069,7 @@ export const ContasReceber: React.FC = () => {
                     <div className="relative flex-1">
                         <Search className="absolute left-3 top-2.5 h-4 w-4 text-gray-400" />
                         <Input
-                            placeholder="Buscar por nº contrato, cliente, fornecedor, CPF ou código…"
+                            placeholder="Buscar por nº contrato, cliente, fornecedor, CPF, código ou natureza…"
                             className="pl-9"
                             value={searchTerm}
                             onChange={(e) => setSearchTerm(e.target.value)}

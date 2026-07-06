@@ -29,7 +29,8 @@ export const EstoqueFornecedorForm: React.FC = () => {
     const cepAbortRef = useRef<AbortController | null>(null);
     const [codigo, setCodigo] = useState('');
     const [form, setForm] = useState({
-        nome: '',
+        razao_social: '',
+        nome_fantasia: '',
         documento: '',
         contato: '',
         email: '',
@@ -125,8 +126,16 @@ export const EstoqueFornecedorForm: React.FC = () => {
             }
 
             setCodigo(data.codigo || '');
+            const razao = data.razao_social || data.nome || '';
+            const fantasia =
+                data.razao_social && data.nome && data.nome !== data.razao_social
+                    ? data.nome
+                    : data.razao_social
+                      ? ''
+                      : data.nome || '';
             setForm({
-                nome: data.nome || '',
+                razao_social: razao,
+                nome_fantasia: fantasia,
                 documento: data.cnpj_cpf || '',
                 contato: data.contato?.telefone || data.contato?.nome || '',
                 email: data.contato?.email || '',
@@ -159,7 +168,7 @@ export const EstoqueFornecedorForm: React.FC = () => {
         }
 
         const documentoDigits = form.documento.replace(/\D/g, '');
-        const nomePreenchido = form.nome.trim().length >= 3;
+        const nomePreenchido = form.razao_social.trim().length >= 3;
         const documentoCompleto = documentoDigits.length === 11 || documentoDigits.length === 14;
         if (!documentoCompleto && !nomePreenchido) {
             setFornecedorDuplicado(null);
@@ -172,7 +181,7 @@ export const EstoqueFornecedorForm: React.FC = () => {
             try {
                 const duplicado = await buscarFornecedorDuplicado({
                     documento: form.documento,
-                    nome: form.nome,
+                    nome: form.razao_social,
                     empresaId: empresaIdOperacao,
                     excluirFornecedorId: isEdit ? fornecedorId : null,
                 });
@@ -189,7 +198,7 @@ export const EstoqueFornecedorForm: React.FC = () => {
             cancelado = true;
             clearTimeout(timer);
         };
-    }, [empresaIdOperacao, form.documento, form.nome, fornecedorId, isEdit]);
+    }, [empresaIdOperacao, form.documento, form.razao_social, fornecedorId, isEdit]);
 
     const preencherEnderecoPorCep = async (cepRaw: string) => {
         const digits = cepSomenteDigitos(cepRaw);
@@ -234,8 +243,8 @@ export const EstoqueFornecedorForm: React.FC = () => {
             showToast('Empresa não identificada. Faça login novamente.', 'error');
             return;
         }
-        if (!form.nome.trim()) {
-            showToast('Informe o nome/razão social.', 'warning');
+        if (!form.razao_social.trim()) {
+            showToast('Informe a razão social do fornecedor.', 'warning');
             return;
         }
         if (!form.documento.trim()) {
@@ -266,7 +275,7 @@ export const EstoqueFornecedorForm: React.FC = () => {
 
         const duplicado = await buscarFornecedorDuplicado({
             documento: form.documento,
-            nome: form.nome,
+            nome: form.razao_social,
             empresaId: empresaIdOperacao,
             excluirFornecedorId: isEdit ? fornecedorId : null,
         });
@@ -277,14 +286,17 @@ export const EstoqueFornecedorForm: React.FC = () => {
         }
 
         setLoading(true);
+        const razaoSocial = form.razao_social.trim();
+        const nomeFantasia = form.nome_fantasia.trim();
+        const nomeExibicao = nomeFantasia || razaoSocial;
         const payload = {
             empresa_id: empresaIdOperacao,
-            nome: form.nome.trim(),
+            nome: nomeExibicao,
             tipo: form.tipo || 'geral',
             cnpj_cpf: form.documento.trim() || null,
-            razao_social: form.nome.trim(),
+            razao_social: razaoSocial,
             contato: {
-                nome: form.nome.trim(),
+                nome: nomeExibicao,
                 telefone: form.contato.trim() || null,
                 email: form.email.trim() || null,
             },
@@ -387,10 +399,17 @@ export const EstoqueFornecedorForm: React.FC = () => {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     {isEdit && <Input label="Código" value={codigo} readOnly />}
                     <Input
-                        label="Nome / Razão Social"
+                        label="Razão Social"
                         placeholder="Fornecedor Exemplo Ltda"
-                        value={form.nome}
-                        onChange={(e) => setForm((prev) => ({ ...prev, nome: e.target.value }))}
+                        value={form.razao_social}
+                        onChange={(e) => setForm((prev) => ({ ...prev, razao_social: e.target.value }))}
+                    />
+                    <Input
+                        label="Nome Fantasia"
+                        placeholder="Opcional — nome comercial do fornecedor"
+                        value={form.nome_fantasia}
+                        onChange={(e) => setForm((prev) => ({ ...prev, nome_fantasia: e.target.value }))}
+                        helperText="Campo opcional. Se vazio, usa a razão social na listagem."
                     />
                     <Input
                         label="CPF / CNPJ"

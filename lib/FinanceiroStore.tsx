@@ -16,6 +16,10 @@ import { buscarClienteIdsPorCodigoContrato } from './buscaContrato';
 import { contaPagarStatusEfetivo, normalizarContasPagarStatus } from './finContaPagarStatus';
 import { contaPagarCodigoMatch, formatarCodigoContaPagar } from './proximoCodigoContaPagar';
 import { dataHojeIsoLocal } from './contratoDatas';
+import {
+    detectarAlteracoesContaPagar,
+    registrarAlteracoesContaPagar,
+} from './finContaPagarAuditoriaService';
 
 // ==================== TYPES ====================
 export interface ContaBancaria {
@@ -399,7 +403,7 @@ interface FinanceiroContextValue {
     contasPagar: ContaPagar[];
     loadContasPagar: (filters?: Record<string, string>) => Promise<void>;
     criarContaPagar: (data: Partial<ContaPagar>) => Promise<string | null>;
-    updateContaPagar: (id: string, data: Partial<ContaPagar>) => Promise<boolean>;
+    updateContaPagar: (id: string, data: Partial<ContaPagar>, motivo?: string) => Promise<boolean>;
     baixarContaPagar: (params: BaixarContaPagarParams) => Promise<string | null>;
     estornarContaPagar: (contaPagarId: string, motivo: string) => Promise<boolean>;
     excluirContaPagar: (contaPagarId: string) => Promise<boolean>;
@@ -886,9 +890,41 @@ export const FinanceiroProvider: React.FC<{ children: React.ReactNode }> = ({ ch
                     }
                 }
 
+                // ── Query 7: busca por natureza financeira (plano de contas) ──
+                let byNatureza: any[] = [];
+                const planoOrParts = [
+                    filtroIlikePostgrest('codigo', searchTerm),
+                    ...buildIlikeParts(searchTerm, ['nome'], { maxVariants: 8 }),
+                ];
+                let planosQ = supabase
+                    .from('fin_plano_contas')
+                    .select('id')
+                    .or(planoOrParts.join(','))
+                    .limit(40);
+                if (ids.length === 1) planosQ = planosQ.eq('empresa_id', ids[0]);
+                else planosQ = planosQ.in('empresa_id', ids);
+                const { data: planosMatch, error: planosError } = await planosQ;
+
+                if (!planosError && (planosMatch ?? []).length > 0) {
+                    const planoIds = planosMatch!.map((p) => p.id);
+                    const { data: contasPlano, error: contasPlanoError } = await applyBaseFilters(
+                        applyEmpresaScopeReceber(
+                            supabase
+                                .from('fin_contas_receber')
+                                .select(CR_SELECT)
+                                .is('deleted_at', null)
+                                .in('plano_conta_id', planoIds)
+                                .order('data_vencimento', { ascending: true })
+                                .limit(100),
+                            ids,
+                        )!,
+                    );
+                    if (!contasPlanoError) byNatureza = contasPlano ?? [];
+                }
+
                 // ── Deduplicação dos resultados ──
                 const dedupe = new Map<string, any>();
-                [...(byDirect ?? []), ...byCliente, ...byContrato, ...byFornecedor].forEach((item) => {
+                [...(byDirect ?? []), ...byCliente, ...byContrato, ...byFornecedor, ...byNatureza].forEach((item) => {
                     if (item?.id) dedupe.set(item.id, item);
                 });
                 mergedData = Array.from(dedupe.values());
@@ -1640,12 +1676,52 @@ export const FinanceiroProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         }
     }, [empresaId, dataRevisionEmpresa, loadContasPagar, shouldFilterByFilial, filialId, user?.id]);
 
-    const updateContaPagar = useCallback(async (id: string, data: Partial<ContaPagar>): Promise<boolean> => {
+    const updateContaPagar = useCallback(async (
+        id: string,
+        data: Partial<ContaPagar>,
+        motivo?: string,
+    ): Promise<boolean> => {
         setError(null);
         try {
-            const { valor_total_centavos, valor_aberto_centavos, ...safeData } = data as any;
+            const { valor_total_centavos, valor_aberto_centavos, observacoes: _obs, ...safeData } = data as Record<string, unknown> & {
+                valor_total_centavos?: unknown;
+                valor_aberto_centavos?: unknown;
+                observacoes?: unknown;
+            };
             const { data: authData } = await supabase.auth.getSession();
             const usuarioId = user?.id || authData.session?.user?.id || null;
+
+            const { data: atual, error: fetchErr } = await supabase
+                .from('fin_contas_pagar')
+                .select('descricao, fornecedor_nome, plano_conta_id, numero_nota_fiscal, data_vencimento, data_competencia, valor_original_centavos')
+                .eq('id', id)
+                .eq('empresa_id', empresaId)
+                .maybeSingle();
+            if (fetchErr) throw fetchErr;
+            if (!atual) throw new Error('Título não encontrado.');
+
+            const planoIds = new Set<string>();
+            if (atual.plano_conta_id) planoIds.add(String(atual.plano_conta_id));
+            if (safeData.plano_conta_id) planoIds.add(String(safeData.plano_conta_id));
+            const planoMap = new Map<string, string>();
+            if (planoIds.size > 0) {
+                const { data: planos } = await supabase
+                    .from('fin_plano_contas')
+                    .select('id, nome')
+                    .in('id', Array.from(planoIds));
+                (planos ?? []).forEach((p: { id: string; nome: string }) => {
+                    planoMap.set(p.id, String(p.nome || '').trim() || '—');
+                });
+            }
+            const formatarPlano = (planoId: string | null | undefined) =>
+                planoId ? (planoMap.get(planoId) ?? planoId) : '—';
+
+            const alteracoes = detectarAlteracoesContaPagar(
+                atual as Record<string, unknown>,
+                safeData,
+                formatarPlano,
+            );
+
             const updateRow = omitTituloTotaisGerados({
                 ...safeData,
                 ...(usuarioId ? { updated_by: usuarioId } : {}),
@@ -1656,6 +1732,28 @@ export const FinanceiroProvider: React.FC<{ children: React.ReactNode }> = ({ ch
                 .eq('id', id)
                 .eq('empresa_id', empresaId);
             if (updateError) throw updateError;
+
+            const novaCompetencia = safeData.data_competencia as string | undefined;
+            if (
+                novaCompetencia &&
+                String(novaCompetencia).slice(0, 7) !== String(atual.data_competencia || '').slice(0, 7)
+            ) {
+                const { error: movErr } = await supabase
+                    .from('fin_movimentacoes')
+                    .update({ data_competencia: novaCompetencia })
+                    .eq('conta_pagar_id', id)
+                    .eq('empresa_id', empresaId);
+                if (movErr) console.warn('[updateContaPagar] sync movimentacoes:', movErr.message);
+            }
+
+            await registrarAlteracoesContaPagar({
+                empresaId,
+                contaPagarId: id,
+                alteracoes,
+                usuarioId,
+                motivo,
+            });
+
             await loadContasPagar();
             return true;
         } catch (err) {

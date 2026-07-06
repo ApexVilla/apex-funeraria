@@ -2,7 +2,7 @@ import React, { useEffect, useState, useCallback, useMemo } from 'react';
 import {
     TrendingUp, TrendingDown, DollarSign, Calendar,
     Download, ChevronDown, Minus, BarChart3,
-    ArrowUpRight, ArrowDownRight, Printer, FileSpreadsheet, FileText, Table2,
+    ArrowUpRight, ArrowDownRight, Printer, FileSpreadsheet, FileText, Table2, Columns3,
 } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
@@ -89,6 +89,45 @@ function getMesAtual() {
 }
 
 type ModoVisualizacao = 'mensal' | 'trimestral' | 'semestral' | 'anual' | 'personalizado';
+
+type VistaDRE = 'tabela' | 'grafico' | 'comparativo';
+
+function labelMesesSelecionados(ano: number, mesesNums: number[]): string {
+    const ordenados = [...mesesNums].sort((a, b) => a - b);
+    if (ordenados.length === 0) return String(ano);
+    if (ordenados.length === 1) {
+        return `${getMeses(ano)[ordenados[0] - 1].label} ${ano}`;
+    }
+    const abrev = ordenados.map((m) => getMeses(ano)[m - 1].label.slice(0, 3));
+    return `${abrev.join(', ')} ${ano}`;
+}
+
+function periodoMensalSelecionado(ano: number, mesesNums: number[]): PeriodoSelecionado {
+    const ordenados = [...mesesNums].sort((a, b) => a - b);
+    const primeiro = ordenados[0];
+    const ultimo = ordenados[ordenados.length - 1];
+    const ultimoDia = new Date(ano, ultimo, 0).getDate();
+    return {
+        inicio: `${ano}-${String(primeiro).padStart(2, '0')}-01`,
+        fim: `${ano}-${String(ultimo).padStart(2, '0')}-${String(ultimoDia).padStart(2, '0')}`,
+        label: labelMesesSelecionados(ano, ordenados),
+    };
+}
+
+function filtrarPorMesesAno<T>(
+    items: T[],
+    ano: number,
+    mesesNums: number[],
+    extrairData: (item: T) => string | null | undefined,
+): T[] {
+    if (mesesNums.length === 0) return items;
+    const prefixos = new Set(mesesNums.map((m) => `${ano}-${String(m).padStart(2, '0')}`));
+    return items.filter((item) => {
+        const data = extrairData(item);
+        if (!data) return false;
+        return prefixos.has(data.slice(0, 7));
+    });
+}
 
 interface PeriodoSelecionado {
     inicio: string;
@@ -657,6 +696,7 @@ export const DRE: React.FC = () => {
     const [loading, setLoading] = useState(true);
     const [ano, setAno] = useState(getAnoAtual());
     const [mes, setMes] = useState(getMesAtual());
+    const [mesesSelecionados, setMesesSelecionados] = useState<number[]>(() => [getMesAtual()]);
     const [modo, setModo] = useState<ModoVisualizacao>('mensal');
     const [dataInicioCustom, setDataInicioCustom] = useState<string>(() => {
         const d = new Date();
@@ -673,7 +713,7 @@ export const DRE: React.FC = () => {
     const [allRecebiveis, setAllRecebiveis] = useState<RawRecebivel[]>([]);
     const [allPagaveis, setAllPagaveis] = useState<RawPagavel[]>([]);
     const [allMovimentacoes, setAllMovimentacoes] = useState<RawMovimentacao[]>([]);
-    const [vista, setVista] = useState<'tabela' | 'grafico'>('tabela');
+    const [vista, setVista] = useState<VistaDRE>('tabela');
     const [expanded, setExpanded] = useState<Set<string>>(new Set(DRE_SECOES_EXPANDIVEIS));
     const [drilldown, setDrilldown] = useState<DREDrilldownContext | null>(null);
     const [drilldownTitulo, setDrilldownTitulo] = useState('');
@@ -696,10 +736,38 @@ export const DRE: React.FC = () => {
             .sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR'));
     }, [empresaIdsScope, empresaNomePorId, drePorUnidade]);
 
-    const periodo = useMemo(() => 
-        calcularPeriodo(modo, ano, mes, dataInicioCustom, dataFimCustom), 
-        [modo, ano, mes, dataInicioCustom, dataFimCustom]
-    );
+    const periodo = useMemo(() => {
+        if (modo === 'mensal') {
+            const mesesAtivos = mesesSelecionados.length > 0 ? mesesSelecionados : [mes];
+            return periodoMensalSelecionado(ano, mesesAtivos);
+        }
+        return calcularPeriodo(modo, ano, mes, dataInicioCustom, dataFimCustom);
+    }, [modo, ano, mes, mesesSelecionados, dataInicioCustom, dataFimCustom]);
+
+    const toggleMesComparacao = (mesNum: number) => {
+        setMesesSelecionados((prev) => {
+            if (prev.includes(mesNum)) {
+                if (prev.length === 1) return prev;
+                return prev.filter((m) => m !== mesNum).sort((a, b) => a - b);
+            }
+            return [...prev, mesNum].sort((a, b) => a - b);
+        });
+    };
+
+    useEffect(() => {
+        if (modo !== 'mensal') return;
+        if (mesesSelecionados.length === 1) {
+            setMes(mesesSelecionados[0]);
+        } else if (mesesSelecionados.length >= 2) {
+            setVista('comparativo');
+        }
+    }, [modo, mesesSelecionados]);
+
+    useEffect(() => {
+        if (vista === 'comparativo' && (modo !== 'mensal' || mesesSelecionados.length < 2)) {
+            setVista('tabela');
+        }
+    }, [vista, modo, mesesSelecionados]);
 
     const toggleSection = (section: string) => {
         setExpanded(prev => {
@@ -863,9 +931,20 @@ export const DRE: React.FC = () => {
             setAllPagaveis(pagaveis);
             setAllMovimentacoes(movimentacoes);
 
-            const recFiltrados = recebiveis.filter(r => r.data_pagamento && r.data_pagamento >= inicio && r.data_pagamento <= fim);
-            const pagFiltrados = pagaveis.filter(p => p.data_baixa && p.data_baixa >= inicio && p.data_baixa <= fim);
-            const movFiltrados = movimentacoes.filter(m => m.data_competencia && m.data_competencia >= inicio && m.data_competencia <= fim);
+            const recFiltradosBase = recebiveis.filter(r => r.data_pagamento && r.data_pagamento >= inicio && r.data_pagamento <= fim);
+            const pagFiltradosBase = pagaveis.filter(p => p.data_baixa && p.data_baixa >= inicio && p.data_baixa <= fim);
+            const movFiltradosBase = movimentacoes.filter(m => m.data_competencia && m.data_competencia >= inicio && m.data_competencia <= fim);
+
+            const mesesFiltro = modo === 'mensal' && mesesSelecionados.length > 0 ? mesesSelecionados : null;
+            const recFiltrados = mesesFiltro
+                ? filtrarPorMesesAno(recFiltradosBase, ano, mesesFiltro, (r) => r.data_pagamento)
+                : recFiltradosBase;
+            const pagFiltrados = mesesFiltro
+                ? filtrarPorMesesAno(pagFiltradosBase, ano, mesesFiltro, (p) => p.data_baixa)
+                : pagFiltradosBase;
+            const movFiltrados = mesesFiltro
+                ? filtrarPorMesesAno(movFiltradosBase, ano, mesesFiltro, (m) => m.data_competencia)
+                : movFiltradosBase;
 
             const porEmpresa = new Map<string, DREData>();
             idsAlvo.forEach((id) => {
@@ -896,6 +975,7 @@ export const DRE: React.FC = () => {
         dataRevisionEmpresa,
         modo,
         ano,
+        mesesSelecionados,
     ]);
 
     useEffect(() => {
@@ -946,8 +1026,40 @@ export const DRE: React.FC = () => {
             p.resultado = dreMes.resultado_liquido;
         });
         
-        return pontos;
-    }, [modo, ano, periodo, abaAtiva, multiUnidade, empresaIdsScope, empresaId, allRecebiveis, allPagaveis, allMovimentacoes]);
+        return pontos.filter((p) => {
+            if (modo === 'mensal' && mesesSelecionados.length > 0) {
+                const mesNum = Number(p.mesYm.split('-')[1]);
+                return mesesSelecionados.includes(mesNum);
+            }
+            return true;
+        });
+    }, [modo, ano, periodo, abaAtiva, multiUnidade, empresaIdsScope, empresaId, allRecebiveis, allPagaveis, allMovimentacoes, mesesSelecionados]);
+
+    const dreComparativoMeses = useMemo(() => {
+        if (modo !== 'mensal' || mesesSelecionados.length < 2) return [];
+        const idsAlvo = abaAtiva === 'consolidado'
+            ? (multiUnidade ? empresaIdsScope : [empresaId])
+            : [abaAtiva];
+        return [...mesesSelecionados]
+            .sort((a, b) => a - b)
+            .map((mesNum) => {
+                const mesYm = `${ano}-${String(mesNum).padStart(2, '0')}`;
+                const recMes = allRecebiveis.filter(
+                    (r) => idsAlvo.includes(r.empresa_id || '') && r.data_pagamento?.startsWith(mesYm),
+                );
+                const pagMes = allPagaveis.filter(
+                    (p) => idsAlvo.includes(p.empresa_id || '') && p.data_baixa?.startsWith(mesYm),
+                );
+                const movMes = allMovimentacoes.filter(
+                    (m) => idsAlvo.includes(m.empresa_id || '') && m.data_competencia?.startsWith(mesYm),
+                );
+                return {
+                    mes: mesNum,
+                    label: getMeses(ano)[mesNum - 1].label,
+                    dre: computeDREFromRaw(recMes, pagMes, movMes),
+                };
+            });
+    }, [modo, mesesSelecionados, ano, abaAtiva, multiUnidade, empresaIdsScope, empresaId, allRecebiveis, allPagaveis, allMovimentacoes]);
 
     const exportPDF = () => {
         const d = dreAtiva;
@@ -1184,7 +1296,8 @@ export const DRE: React.FC = () => {
             />
 
             {/* Filtros */}
-            <div className="flex flex-col md:flex-row md:items-end gap-3 bg-white p-4 rounded-lg shadow-sm border print:hidden">
+            <div className="flex flex-col gap-3 bg-white p-4 rounded-lg shadow-sm border print:hidden">
+                <div className="flex flex-col md:flex-row md:items-end gap-3">
                 <div className="w-full md:w-44">
                     <Select value={modo} onChange={(e) => setModo(e.target.value as ModoVisualizacao)}>
                         <option value="mensal">Mensal</option>
@@ -1203,7 +1316,7 @@ export const DRE: React.FC = () => {
                         </Select>
                     </div>
                 )}
-                {modo !== 'anual' && modo !== 'personalizado' && (
+                {modo !== 'anual' && modo !== 'personalizado' && modo !== 'mensal' && (
                     <div className="w-full md:w-44">
                         <Select
                             value={
@@ -1215,9 +1328,6 @@ export const DRE: React.FC = () => {
                             }
                             onChange={(e) => setMes(Number(e.target.value))}
                         >
-                            {modo === 'mensal' && meses.map(m => (
-                                <option key={m.mes} value={m.mes}>{m.label}</option>
-                            ))}
                             {modo === 'trimestral' && [1, 2, 3, 4].map(t => (
                                 <option key={t} value={t * 3 - 2}>{t}º Trimestre</option>
                             ))}
@@ -1246,6 +1356,36 @@ export const DRE: React.FC = () => {
                             />
                         </div>
                     </>
+                )}
+                </div>
+
+                {modo === 'mensal' && (
+                    <div>
+                        <p className="text-xs font-semibold text-gray-500 dark:text-slate-400 uppercase mb-2">
+                            Meses — selecione um ou mais para comparar
+                        </p>
+                        <div className="flex flex-wrap gap-1.5">
+                            {meses.map((m) => {
+                                const ativo = mesesSelecionados.includes(m.mes);
+                                return (
+                                    <button
+                                        key={m.mes}
+                                        type="button"
+                                        aria-pressed={ativo}
+                                        onClick={() => toggleMesComparacao(m.mes)}
+                                        className={`dre-mes-chip${ativo ? ' dre-mes-chip-ativo' : ''}`}
+                                    >
+                                        {m.label.slice(0, 3)}
+                                    </button>
+                                );
+                            })}
+                        </div>
+                        {mesesSelecionados.length > 1 && (
+                            <p className="text-xs text-blue-600 dark:text-blue-400 mt-2 font-medium">
+                                {mesesSelecionados.length} meses selecionados — use a aba Comparativo para ver lado a lado
+                            </p>
+                        )}
+                    </div>
                 )}
             </div>
 
@@ -1430,6 +1570,9 @@ export const DRE: React.FC = () => {
                     {([
                         { id: 'tabela' as const, label: 'Tabela DRE', icon: Table2 },
                         { id: 'grafico' as const, label: 'Gráfico Mensal', icon: BarChart3 },
+                        ...(modo === 'mensal' && mesesSelecionados.length >= 2
+                            ? [{ id: 'comparativo' as const, label: 'Comparativo', icon: Columns3 }]
+                            : []),
                     ]).map((tab) => {
                         const Icon = tab.icon;
                         const selected = vista === tab.id;
@@ -1788,6 +1931,81 @@ export const DRE: React.FC = () => {
                     </table>
                 </div>
             </Card>
+            </div>
+
+            {/* Comparativo Mensal */}
+            <div className={vista === 'comparativo' ? 'block print:hidden' : 'hidden'}>
+                <Card className="overflow-hidden">
+                    <div className="p-4 border-b bg-indigo-900 text-white">
+                        <h3 className="font-semibold flex items-center gap-2">
+                            <Columns3 className="h-5 w-5" />
+                            Comparativo Mensal — {tituloAbaAtiva}
+                        </h3>
+                        <p className="text-xs text-indigo-100 mt-0.5">
+                            {labelMesesSelecionados(ano, mesesSelecionados)} · Regime de caixa
+                        </p>
+                    </div>
+                    {dreComparativoMeses.length < 2 ? (
+                        <div className="p-8 text-center text-sm text-gray-500">
+                            Selecione pelo menos dois meses nos filtros acima para comparar.
+                        </div>
+                    ) : (
+                        <div className="overflow-x-auto">
+                            <table className="w-full text-sm">
+                                <thead className="bg-slate-800 text-white uppercase text-xs tracking-wider">
+                                    <tr>
+                                        <th className="text-left py-3 px-4 font-semibold min-w-[180px]">Indicador</th>
+                                        {dreComparativoMeses.map((col) => (
+                                            <th key={col.mes} className="text-right py-3 px-4 font-semibold whitespace-nowrap">
+                                                {col.label}
+                                            </th>
+                                        ))}
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y divide-slate-100 dark:divide-slate-700">
+                                    {([
+                                        { label: 'Receita Bruta', get: (x: DREData) => x.receita_bruta, cls: '' },
+                                        { label: 'Total Pago', get: (x: DREData) => x.total_pago, cls: 'text-red-600' },
+                                        { label: 'Lucro Bruto', get: (x: DREData) => x.lucro_bruto, cls: 'text-green-600' },
+                                        { label: 'Resultado Operacional', get: (x: DREData) => x.resultado_operacional, cls: '' },
+                                        { label: 'Resultado Líquido', get: (x: DREData) => x.resultado_liquido, cls: 'font-bold' },
+                                    ] as const).map((row) => (
+                                        <tr key={row.label} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/40">
+                                            <td className="py-3 px-4 font-medium text-slate-800 dark:text-slate-200">{row.label}</td>
+                                            {dreComparativoMeses.map((col) => {
+                                                const val = row.get(col.dre);
+                                                const cor = row.label.includes('Líquido') || row.label.includes('Bruto') || row.label.includes('Operacional')
+                                                    ? (val >= 0 ? 'text-emerald-600' : 'text-red-600')
+                                                    : row.cls;
+                                                return (
+                                                    <td key={col.mes} className={`py-3 px-4 text-right tabular-nums ${cor}`}>
+                                                        {formatCentavos(val)}
+                                                    </td>
+                                                );
+                                            })}
+                                        </tr>
+                                    ))}
+                                    <tr className="bg-slate-50/80 dark:bg-slate-800/50">
+                                        <td className="py-3 px-4 font-medium text-slate-700 dark:text-slate-300">Margem Líquida</td>
+                                        {dreComparativoMeses.map((col) => {
+                                            const margem = col.dre.receita_bruta
+                                                ? (col.dre.resultado_liquido / col.dre.receita_bruta) * 100
+                                                : 0;
+                                            return (
+                                                <td
+                                                    key={col.mes}
+                                                    className={`py-3 px-4 text-right tabular-nums font-semibold ${margem >= 0 ? 'text-emerald-600' : 'text-red-600'}`}
+                                                >
+                                                    {formatPercent(margem)}
+                                                </td>
+                                            );
+                                        })}
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    )}
+                </Card>
             </div>
 
             {/* Gráfico Mensal */}
