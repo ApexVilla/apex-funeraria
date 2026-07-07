@@ -1,0 +1,241 @@
+@import "tailwindcss" source(none);
+@source "../src";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 10px);
+  --radius-3xl: calc(var(--radius) + 18px);
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary-soft: var(--primary-soft);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --font-display: "Plus Jakarta Sans", system-ui, sans-serif;
+  --font-sans: "Plus Jakarta Sans", system-ui, sans-serif;
+
+  --shadow-soft: 0 4px 18px -6px color-mix(in oklab, var(--primary) 22%, transparent);
+  --shadow-glow: 0 14px 40px -12px color-mix(in oklab, var(--primary) 35%, transparent);
+  --shadow-card: 0 2px 10px -4px oklch(0.6 0.08 230 / 0.18);
+}
+
+:root {
+  --radius: 1.25rem;
+
+  --background: oklch(0.99 0.005 220);
+  --foreground: oklch(0.2 0.035 245);
+
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.2 0.035 245);
+
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.2 0.035 245);
+
+  --primary: oklch(0.56 0.19 230);
+  --primary-foreground: oklch(0.99 0.005 220);
+  --primary-soft: oklch(0.95 0.035 225);
+
+  --secondary: oklch(0.96 0.015 225);
+  --secondary-foreground: oklch(0.28 0.04 245);
+
+  --muted: oklch(0.97 0.01 225);
+  --muted-foreground: oklch(0.48 0.035 245);
+
+  --accent: oklch(0.85 0.1 220);
+  --accent-foreground: oklch(0.18 0.04 245);
+
+  --destructive: oklch(0.58 0.22 25);
+  --destructive-foreground: oklch(0.99 0 0);
+
+  --success: oklch(0.68 0.16 160);
+  --success-foreground: oklch(0.15 0.04 160);
+
+  --warning: oklch(0.8 0.15 75);
+  --warning-foreground: oklch(0.25 0.05 75);
+
+  --border: oklch(0.93 0.015 225);
+  --input: oklch(0.95 0.015 225);
+  --ring: oklch(0.56 0.19 230);
+
+  --gradient-primary: linear-gradient(135deg, oklch(0.64 0.18 220), oklch(0.46 0.19 250));
+  --gradient-soft: linear-gradient(180deg, oklch(0.985 0.01 220), oklch(0.955 0.02 230));
+  --gradient-hero: radial-gradient(
+    120% 80% at 20% 0%,
+    oklch(0.86 0.08 220) 0%,
+    oklch(0.98 0.01 225) 60%
+  );
+}
+
+.dark {
+  --background: oklch(0.16 0.03 245);
+  --foreground: oklch(0.98 0.005 220);
+  --card: oklch(0.2 0.035 245);
+  --card-foreground: oklch(0.98 0.005 220);
+  --popover: oklch(0.2 0.035 245);
+  --popover-foreground: oklch(0.98 0.005 220);
+  --primary: oklch(0.65 0.16 225);
+  --primary-foreground: oklch(0.14 0.03 245);
+  --primary-soft: oklch(0.26 0.05 235);
+  --secondary: oklch(0.25 0.03 245);
+  --secondary-foreground: oklch(0.98 0.005 220);
+  --muted: oklch(0.22 0.025 245);
+  --muted-foreground: oklch(0.7 0.02 220);
+  --accent: oklch(0.45 0.12 220);
+  --accent-foreground: oklch(0.98 0 0);
+  --destructive: oklch(0.65 0.2 25);
+  --destructive-foreground: oklch(0.99 0 0);
+  --success: oklch(0.7 0.16 160);
+  --success-foreground: oklch(0.12 0.03 160);
+  --warning: oklch(0.8 0.15 75);
+  --warning-foreground: oklch(0.2 0.05 75);
+  --border: oklch(0.28 0.025 245);
+  --input: oklch(0.26 0.025 245);
+  --ring: oklch(0.65 0.16 225);
+
+  --gradient-primary: linear-gradient(135deg, oklch(0.58 0.16 225), oklch(0.4 0.16 250));
+  --gradient-soft: linear-gradient(180deg, oklch(0.18 0.03 245), oklch(0.14 0.025 245));
+  --gradient-hero: radial-gradient(
+    120% 80% at 20% 0%,
+    oklch(0.32 0.06 235) 0%,
+    oklch(0.16 0.03 245) 60%
+  );
+}
+
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+  html {
+    /* Barras do sistema (edge-to-edge no Android 15+/iOS). O runtime do
+       Capacitor injeta estes valores inline quando env() não é suportado. */
+    --safe-area-inset-top: env(safe-area-inset-top, 0px);
+    --safe-area-inset-right: env(safe-area-inset-right, 0px);
+    --safe-area-inset-bottom: env(safe-area-inset-bottom, 0px);
+    --safe-area-inset-left: env(safe-area-inset-left, 0px);
+  }
+  html,
+  body {
+    font-family: var(--font-sans);
+  }
+  body {
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    -webkit-font-smoothing: antialiased;
+  }
+}
+
+@layer utilities {
+  .bg-gradient-primary {
+    background-image: var(--gradient-primary);
+  }
+  .bg-gradient-soft {
+    background-image: var(--gradient-soft);
+  }
+  .bg-gradient-hero {
+    background-image: var(--gradient-hero);
+  }
+  .shadow-soft {
+    box-shadow: var(--shadow-soft);
+  }
+  .shadow-glow {
+    box-shadow: var(--shadow-glow);
+  }
+  .shadow-card {
+    box-shadow: var(--shadow-card);
+  }
+
+  .glass {
+    background: color-mix(in oklab, var(--card) 72%, transparent);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+  }
+
+  .tap-scale {
+    transition: transform 0.18s ease;
+  }
+  .tap-scale:active {
+    transform: scale(0.96);
+  }
+
+  /* Espaçamentos que somam as barras do sistema (safe areas) */
+  .pt-safe-page {
+    padding-top: calc(2.5rem + var(--safe-area-inset-top));
+  }
+  .pt-safe-hero {
+    padding-top: calc(3.5rem + var(--safe-area-inset-top));
+  }
+  .pb-safe-page {
+    padding-bottom: calc(2rem + var(--safe-area-inset-bottom));
+  }
+  .pb-safe-shell {
+    padding-bottom: calc(7rem + var(--safe-area-inset-bottom));
+  }
+  .pb-safe-nav {
+    padding-bottom: calc(0.75rem + var(--safe-area-inset-bottom));
+  }
+  .bottom-safe-fab {
+    bottom: calc(6rem + var(--safe-area-inset-bottom));
+  }
+  .bottom-safe-modal {
+    bottom: calc(2.5rem + var(--safe-area-inset-bottom));
+  }
+}
+
+/* Anel pulsante com transform/opacity (composição na GPU) em vez de
+   box-shadow, que forçava repaint contínuo do botão fixo. */
+@keyframes pulse-ring-ping {
+  0% {
+    transform: scale(1);
+    opacity: 0.55;
+  }
+  70%,
+  100% {
+    transform: scale(1.4);
+    opacity: 0;
+  }
+}
+.animate-pulse-ring-destructive {
+  position: relative;
+}
+.animate-pulse-ring-destructive::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  background: color-mix(in oklab, var(--destructive) 45%, transparent);
+  animation: pulse-ring-ping 2s ease-out infinite;
+  pointer-events: none;
+  will-change: transform, opacity;
+}
+@media (prefers-reduced-motion: reduce) {
+  .animate-pulse-ring-destructive::before {
+    animation: none;
+  }
+}
