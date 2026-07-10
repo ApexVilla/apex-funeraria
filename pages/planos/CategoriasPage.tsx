@@ -4,7 +4,8 @@ import {
     Package, Shield, RefreshCw
 } from 'lucide-react';
 import { PageHeader } from '../../components/common/PageHeader';
-import { Button, Input, Card } from '../../components/ui/Components';
+import { Button, Input, Card, Textarea } from '../../components/ui/Components';
+import { Modal } from '../../components/ui/Modal';
 import { normalizeTipoBeneficio, usePlanosStore } from '../../lib/PlanosStore';
 import { useToast } from '../../lib/ToastStore';
 import { supabase } from '../../lib/supabase';
@@ -65,6 +66,7 @@ export const CategoriasPage: React.FC = () => {
     };
 
     // Beneficios state
+    const [showNovoModal, setShowNovoModal] = useState(false);
     const [newBenNome, setNewBenNome] = useState('');
     const [newBenType, setNewBenType] = useState<(typeof BENEFICIO_TIPOS)[number]['value']>('funerario');
     const [newBenDesc, setNewBenDesc] = useState('');
@@ -114,6 +116,8 @@ export const CategoriasPage: React.FC = () => {
             if (error) throw error;
             setNewBenNome('');
             setNewBenDesc('');
+            setNewBenType('funerario');
+            setShowNovoModal(false);
             await loadBeneficios();
             showToast('Benefício adicionado com sucesso.', 'success');
         } catch (e) {
@@ -208,9 +212,16 @@ export const CategoriasPage: React.FC = () => {
                 title="Benefícios"
                 subtitle="Gerencie os serviços inclusos nos planos"
                 actionButton={
-                    <Button variant="outline" size="sm" onClick={() => { loadBeneficios(); }}>
-                        <RefreshCw className="h-4 w-4 mr-1" /> Atualizar
-                    </Button>
+                    <div className="flex items-center gap-2">
+                        <Button variant="outline" size="sm" onClick={() => { loadBeneficios(); }}>
+                            <RefreshCw className="h-4 w-4 mr-1" /> Atualizar
+                        </Button>
+                        {canEdit && (
+                            <Button size="sm" onClick={() => setShowNovoModal(true)}>
+                                <Plus className="h-4 w-4 mr-1" /> Novo Benefício
+                            </Button>
+                        )}
+                    </div>
                 }
             />
 
@@ -230,50 +241,6 @@ export const CategoriasPage: React.FC = () => {
             </div>
 
             <div className="space-y-4">
-                {/* Add new */}
-                {canEdit && (
-                    <Card className="p-6 border border-slate-200 shadow-sm relative overflow-hidden">
-                        <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-blue-500 via-indigo-500 to-purple-600" />
-                        <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-4 flex items-center gap-2">
-                            <span className="h-2 w-2 rounded-full bg-blue-600 animate-pulse" />
-                            Novo Benefício do Sistema
-                        </h4>
-                        <div className="flex flex-col xl:flex-row gap-4 items-end">
-                            <div className="flex-1 w-full">
-                                <Input
-                                    label="Nome do Benefício"
-                                    placeholder="Ex: Urna Funerária Luxo ou Limpeza..."
-                                    value={newBenNome}
-                                    onChange={(e) => setNewBenNome(e.target.value)}
-                                />
-                            </div>
-                            <div className="w-full xl:w-44 flex flex-col gap-1.5">
-                                <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Setor / Tipo</label>
-                                <select
-                                    value={newBenType}
-                                    onChange={(e) => setNewBenType(e.target.value as (typeof BENEFICIO_TIPOS)[number]['value'])}
-                                    className="w-full h-10 px-3 border border-slate-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-accent/50"
-                                >
-                                    {BENEFICIO_TIPOS.map((tipo) => (
-                                        <option key={tipo.value} value={tipo.value}>{tipo.label}</option>
-                                    ))}
-                                </select>
-                            </div>
-                            <div className="flex-1 w-full">
-                                <Input
-                                    label="Descrição Curta (Opcional)"
-                                    placeholder="Detalhes sobre o benefício..."
-                                    value={newBenDesc}
-                                    onChange={(e) => setNewBenDesc(e.target.value)}
-                                />
-                            </div>
-                            <Button onClick={handleAddBeneficio} loading={saving} disabled={!newBenNome.trim()} className="w-full xl:w-auto h-10">
-                                <Plus className="h-4 w-4 mr-2" /> Adicionar Benefício
-                            </Button>
-                        </div>
-                    </Card>
-                )}
-
                 {/* Actions Row */}
                 <Card className="p-4 border border-slate-200 shadow-sm bg-slate-50/50">
                     <div className="flex flex-col sm:flex-row justify-between items-center gap-3">
@@ -356,6 +323,46 @@ export const CategoriasPage: React.FC = () => {
                     <p className="text-center text-slate-400 py-12 italic text-sm">Nenhum benefício encontrado para o filtro selecionado</p>
                 )}
             </div>
+
+            {/* Modal de novo benefício */}
+            <Modal isOpen={showNovoModal} onClose={() => setShowNovoModal(false)} title="Novo Benefício">
+                <div className="space-y-4">
+                    <Input
+                        label="Nome do Benefício"
+                        placeholder="Ex: Urna Funerária Luxo ou Limpeza..."
+                        value={newBenNome}
+                        onChange={(e) => setNewBenNome(e.target.value)}
+                        autoFocus
+                    />
+                    <div className="flex flex-col gap-1.5">
+                        <label className="text-xs font-bold text-slate-500 uppercase tracking-wider">Setor / Tipo</label>
+                        <select
+                            value={newBenType}
+                            onChange={(e) => setNewBenType(e.target.value as (typeof BENEFICIO_TIPOS)[number]['value'])}
+                            className="w-full h-10 px-3 border border-slate-300 rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-accent/50"
+                        >
+                            {BENEFICIO_TIPOS.map((tipo) => (
+                                <option key={tipo.value} value={tipo.value}>{tipo.label}</option>
+                            ))}
+                        </select>
+                    </div>
+                    <Textarea
+                        label="Descrição Curta (Opcional)"
+                        placeholder="Detalhes sobre o benefício..."
+                        rows={3}
+                        value={newBenDesc}
+                        onChange={(e) => setNewBenDesc(e.target.value)}
+                    />
+                    <div className="flex justify-end gap-2 pt-2">
+                        <Button variant="outline" onClick={() => setShowNovoModal(false)} disabled={saving}>
+                            Cancelar
+                        </Button>
+                        <Button onClick={handleAddBeneficio} loading={saving} disabled={!newBenNome.trim()}>
+                            <Plus className="h-4 w-4 mr-2" /> Salvar Benefício
+                        </Button>
+                    </div>
+                </div>
+            </Modal>
         </div>
     );
 };

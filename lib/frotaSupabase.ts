@@ -677,6 +677,153 @@ export async function frotaUpdateAbastecimento(
   throwDb(error);
 }
 
+// ─── Requisições de Abastecimento ─────────────────────────────────────────
+
+export async function frotaListRequisicoesAbastecimento(
+  empresaId: string,
+  filters: { search?: string; status?: string } = {},
+  opts?: { empresaIds?: string[] },
+): Promise<any[]> {
+  const ids = resolveFrotaEmpresaIds(empresaId, opts);
+  if (!ids.length) return [];
+  const multi = ids.length > 1;
+  let q = supabase.from('frota_requisicoes_abastecimento').select('*');
+  q = multi ? q.in('empresa_id', ids) : q.eq('empresa_id', ids[0]);
+  if (filters.status) q = q.eq('status', filters.status);
+  q = q.order('numero', { ascending: false });
+  const { data, error } = await q;
+  throwDb(error);
+  const rows = data || [];
+  const vids = [...new Set(rows.map((r: any) => r.veiculo_id).filter(Boolean))] as string[];
+  const mids = [...new Set(rows.map((r: any) => r.motorista_id).filter(Boolean))] as string[];
+  const veicQuery = () => {
+    if (!vids.length) return Promise.resolve({ data: [] as any[], error: null });
+    let vq = supabase.from('frota_veiculos').select('id, placa, modelo, marca').in('id', vids);
+    vq = multi ? vq.in('empresa_id', ids) : vq.eq('empresa_id', ids[0]);
+    return vq;
+  };
+  const motQuery = () => {
+    if (!mids.length) return Promise.resolve({ data: [] as any[], error: null });
+    let mq = supabase.from('frota_motoristas').select('id, nome').in('id', mids);
+    mq = multi ? mq.in('empresa_id', ids) : mq.eq('empresa_id', ids[0]);
+    return mq;
+  };
+  const [ve, mo] = await Promise.all([veicQuery(), motQuery()]);
+  throwDb(ve.error);
+  throwDb(mo.error);
+  const vmap = Object.fromEntries((ve.data || []).map((v: any) => [v.id, v]));
+  const mmap = Object.fromEntries((mo.data || []).map((m: any) => [m.id, m]));
+  let out = rows.map((r: any) => {
+    const fv = vmap[r.veiculo_id];
+    const fm = r.motorista_id ? mmap[r.motorista_id] : null;
+    return {
+      ...r,
+      placa: fv?.placa,
+      modelo: fv?.modelo,
+      marca: fv?.marca,
+      motorista_nome: fm?.nome,
+    };
+  });
+  const s = filters.search?.trim();
+  if (s) {
+    const low = s.toLowerCase();
+    out = out.filter(
+      (r: any) =>
+        String(r.placa || '').toLowerCase().includes(low) ||
+        String(r.motorista_nome || '').toLowerCase().includes(low) ||
+        String(r.posto || '').toLowerCase().includes(low) ||
+        String(r.numero || '').includes(low.replace(/\D/g, '') || '###'),
+    );
+  }
+  return out;
+}
+
+function buildFrotaRequisicaoDbRow(payload: Record<string, unknown>) {
+  const tipoLimite = String(payload.tipo_limite || 'valor');
+  return {
+    veiculo_id: payload.veiculo_id,
+    motorista_id: payload.motorista_id || null,
+    data_emissao: payload.data_emissao || new Date().toISOString().slice(0, 10),
+    validade: payload.validade || null,
+    combustivel: payload.combustivel || null,
+    tipo_limite: tipoLimite,
+    litros_autorizados: tipoLimite === 'litros' ? Number(payload.litros_autorizados || 0) || null : null,
+    valor_autorizado: tipoLimite === 'valor' ? Number(payload.valor_autorizado || 0) || null : null,
+    posto: payload.posto || null,
+    observacao: payload.observacao || null,
+  };
+}
+
+/** Emite requisição; `numero` sequencial por empresa é gerado por trigger no banco. */
+export async function frotaInsertRequisicaoAbastecimento(
+  empresaId: string,
+  payload: Record<string, unknown>,
+): Promise<{ id: string; numero: number }> {
+  const { data: auth } = await supabase.auth.getUser();
+  const row = {
+    empresa_id: empresaId,
+    criado_por: auth?.user?.id || null,
+    ...buildFrotaRequisicaoDbRow(payload),
+  };
+  const { data, error } = await supabase
+    .from('frota_requisicoes_abastecimento')
+    .insert(row)
+    .select('id, numero')
+    .single();
+  throwDb(error);
+  return data as { id: string; numero: number };
+}
+
+export async function frotaUpdateRequisicaoAbastecimento(
+  empresaId: string,
+  id: string,
+  payload: Record<string, unknown>,
+): Promise<void> {
+  const row = buildFrotaRequisicaoDbRow(payload);
+  const { error } = await supabase
+    .from('frota_requisicoes_abastecimento')
+    .update(row)
+    .eq('id', id)
+    .eq('empresa_id', empresaId)
+    .eq('status', 'aberta');
+  throwDb(error);
+}
+
+export async function frotaCancelarRequisicaoAbastecimento(empresaId: string, id: string): Promise<void> {
+  const { data, error } = await supabase
+    .from('frota_requisicoes_abastecimento')
+    .update({ status: 'cancelada', cancelada_em: new Date().toISOString() })
+    .eq('id', id)
+    .eq('empresa_id', empresaId)
+    .eq('status', 'aberta')
+    .select('id');
+  throwDb(error);
+  if (!data?.length) throw new Error('Só é possível cancelar requisições em aberto.');
+}
+
+/** Baixa a requisição: registra o abastecimento realizado e vincula à requisição. */
+export async function frotaBaixarRequisicaoAbastecimento(
+  empresaId: string,
+  requisicaoId: string,
+  abastecimentoPayload: Record<string, unknown>,
+): Promise<string> {
+  const abastecimentoId = await frotaInsertAbastecimento(empresaId, abastecimentoPayload);
+  const { data, error } = await supabase
+    .from('frota_requisicoes_abastecimento')
+    .update({
+      status: 'utilizada',
+      abastecimento_id: abastecimentoId,
+      utilizada_em: new Date().toISOString(),
+    })
+    .eq('id', requisicaoId)
+    .eq('empresa_id', empresaId)
+    .eq('status', 'aberta')
+    .select('id');
+  throwDb(error);
+  if (!data?.length) throw new Error('Requisição já utilizada ou cancelada.');
+  return abastecimentoId;
+}
+
 // ─── Manutenções ───────────────────────────────────────────────────────────
 
 export async function frotaListManutencoes(

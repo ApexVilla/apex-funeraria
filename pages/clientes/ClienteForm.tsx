@@ -1,6 +1,6 @@
 import React, { useMemo, useState, useEffect, useRef, useCallback } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
-import { CreditCard, MessageCircle } from 'lucide-react';
+import { CreditCard, MessageCircle, Trash2 } from 'lucide-react';
 import { validarWhatsapp } from '../../lib/whatsappValidacao';
 import { PageHeader } from '../../components/common/PageHeader';
 import { Button, Input, Select, Card, Textarea } from '../../components/ui/Components';
@@ -16,7 +16,6 @@ import { useEmpresaContextoAtivo } from '../../lib/EmpresaContextoAtivo';
 import { useFilial } from '../../lib/FilialContext';
 import { unidadeNomeCurto } from '../../lib/contextoUnidadeLabels';
 import { validarBeneficiariosOpcionais } from '../../lib/beneficiarioValidacaoCliente';
-import { BeneficiarioCarenciaPreview } from '../../components/clientes/BeneficiarioCarenciaInfo';
 import { BeneficiariosCadastroTabela } from '../../components/clientes/BeneficiariosCadastroTabela';
 import { ParentescoDependenteSelect } from '../../components/clientes/ParentescoDependenteSelect';
 import { Badge } from '../../components/ui/Components';
@@ -27,6 +26,7 @@ import {
 import { normalizarParentescoDependente } from '../../lib/parentescoDependente';
 import {
   aplicarCarenciaBeneficiarioPayload,
+  calcularStatusCarenciaDependente,
   diasCarenciaDependenteDoPlano,
   formatarResumoCarenciaContrato,
   limitesDataFiliacaoDependente,
@@ -181,7 +181,7 @@ export const ClienteForm: React.FC = () => {
   const incluiContratoNoCadastro = !isEdit && !isContractFlow && criarContratoAgora;
   const stepLabels = useMemo(() => {
     if (isContractFlow) {
-      return ['Cliente', 'Contrato & Dependentes', 'Revisão'];
+      return ['Cliente', 'Plano & Contrato', 'Dependentes', 'Revisão'];
     }
     if (isEdit) {
       return ['Dados Pessoais', 'Endereço', 'Dependentes', 'Financeiro', 'Revisão'];
@@ -1084,16 +1084,18 @@ export const ClienteForm: React.FC = () => {
       }
       if (targetStep === 2) {
         if (!validateContratoPlano()) return false;
+        if (pagamentoViaCobrador && !form.cobrador_id) {
+          showToast('Selecione o cobrador que fará a cobrança.', 'warning');
+          return false;
+        }
+      }
+      if (targetStep === 3) {
         const msgDep = validarBeneficiariosOpcionais(
           form.beneficiarios || [],
           dataInicioContratoEfetiva,
         );
         if (msgDep) {
           showToast(msgDep, 'warning');
-          return false;
-        }
-        if (pagamentoViaCobrador && !form.cobrador_id) {
-          showToast('Selecione o cobrador que fará a cobrança.', 'warning');
           return false;
         }
       }
@@ -2185,165 +2187,162 @@ export const ClienteForm: React.FC = () => {
           </div>
         </div>
 
-        <BeneficiariosCadastroTabela
-          beneficiarios={form.beneficiarios}
-          plano={planoSel ?? null}
-          dataInicioContrato={dataInicioCtr}
-          titulo="Lista para conferência (vendedor)"
-          vazio="Nenhum dependente na lista — adicione acima para ver filiação e carência aqui."
-        />
-
         {form.beneficiarios.length === 0 ? (
-          <p className="text-center text-gray-500 dark:text-slate-400 py-4">Nenhum beneficiário adicionado.</p>
-        ) : (
-          <div className="space-y-4">
-            <p className="text-[10px] font-bold uppercase tracking-wider text-gray-500 dark:text-slate-400">
-              Digitação dos dependentes
-            </p>
-            {form.beneficiarios.map((ben, idx) => (
-              <div
-                key={ben.id || idx}
-                className="rounded-xl border border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-900/60 p-4 shadow-sm space-y-4"
-              >
-                <div className="flex items-center justify-between gap-3 pb-3 border-b border-gray-100 dark:border-slate-800">
-                  <span className="text-xs font-black uppercase tracking-wider text-gray-700 dark:text-slate-300">
-                    Dependente {idx + 1}
-                  </span>
-                  <Button
-                    type="button"
-                    variant="danger"
-                    size="sm"
-                    className="shrink-0"
-                    onClick={() => {
-                      const newList = form.beneficiarios.filter((_, i) => i !== idx);
-                      setForm((f) => ({ ...f, beneficiarios: newList }));
-                    }}
-                  >
-                    Remover
-                  </Button>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-12 gap-4 items-start">
-                  <div className="sm:col-span-2 lg:col-span-6">
-                    <Input
-                      label="Nome completo (opcional)"
-                      autoComplete="off"
-                      value={ben.nome}
-                      onChange={(e) => {
-                        setForm((f) => ({
-                          ...f,
-                          beneficiarios: f.beneficiarios.map((item, i) =>
-                            i === idx ? { ...item, nome: e.target.value } : item,
-                          ),
-                        }));
-                      }}
-                    />
-                  </div>
-                  <div className="sm:col-span-1 lg:col-span-3">
-                    <ParentescoDependenteSelect
-                      required
-                      value={ben.parentesco}
-                      onChange={(e) => {
-                        const valor = normalizarParentescoDependente(e.target.value);
-                        setForm((f) => ({
-                          ...f,
-                          beneficiarios: f.beneficiarios.map((item, i) =>
-                            i === idx ? { ...item, parentesco: valor } : item,
-                          ),
-                        }));
-                      }}
-                    />
-                  </div>
-                  <div className="sm:col-span-1 lg:col-span-3">
-                    {ben.id && isEdit ? (
-                      <div className="w-full space-y-1.5">
-                        <label className="block text-xs font-bold text-gray-700 dark:text-slate-300 uppercase tracking-wider ml-1">
-                          Data de filiação
-                        </label>
-                        <div className="flex h-11 w-full items-center rounded-xl border border-gray-200 dark:border-slate-700 bg-gray-100/80 px-4 text-sm text-gray-700 dark:text-slate-300">
-                          {ben.data_inclusao
-                            ? formatarDataIsoPtBr(ben.data_inclusao)
-                            : '—'}
-                        </div>
-                        <p className="text-[11px] text-gray-500 dark:text-slate-400 ml-1">
-                          Definida no cadastro — não pode ser alterada na edição.
-                        </p>
-                      </div>
-                    ) : (
-                      <Input
-                        label="Data de filiação"
-                        type="date"
-                        min={filiacaoDataLivreNoCadastro ? undefined : limitesFiliacao?.min}
-                        max={filiacaoDataLivreNoCadastro ? undefined : limitesFiliacao?.max}
-                        helperText={
-                          filiacaoDataLivreNoCadastro
-                            ? 'Informe a data real de filiação do dependente (qualquer data). Digite (DD/MM/AAAA) ou use o calendário.'
-                            : `${mensagemLimiteDataFiliacaoDependente(dataInicioCtr)} Digite (DD/MM/AAAA) ou use o calendário.`
-                        }
-                        value={ben.data_inclusao || ''}
-                        onChange={(e) => {
-                          const valor = (e.target.value || '').slice(0, 10);
-                          setForm((f) => ({
-                            ...f,
-                            beneficiarios: f.beneficiarios.map((item, i) =>
-                              i === idx ? { ...item, data_inclusao: valor } : item,
-                            ),
-                          }));
-                        }}
-                      />
-                    )}
-                  </div>
-                  <div className="sm:col-span-1 lg:col-span-4">
-                    <Input
-                      label="Nascimento (opcional)"
-                      type="date"
-                      pickerOnly
-                      helperText=""
-                      value={ben.data_nascimento}
-                      onChange={(e) => {
-                        const newList = [...form.beneficiarios];
-                        newList[idx].data_nascimento = e.target.value;
-                        setForm((f) => ({ ...f, beneficiarios: newList }));
-                      }}
-                    />
-                  </div>
-                  <div className="sm:col-span-1 lg:col-span-4">
-                    <Input
-                      label="CPF (opcional)"
-                      value={ben.cpf || ''}
-                      onChange={(e) => {
-                        const newList = [...form.beneficiarios];
-                        newList[idx].cpf = maskCpf(e.target.value);
-                        setForm((f) => ({ ...f, beneficiarios: newList }));
-                      }}
-                      placeholder="000.000.000-00"
-                    />
-                  </div>
-                  <div className="sm:col-span-1 lg:col-span-4">
-                    <Input
-                      label="RG"
-                      value={ben.rg || ''}
-                      onChange={(e) => {
-                        const newList = [...form.beneficiarios];
-                        newList[idx].rg = e.target.value;
-                        setForm((f) => ({ ...f, beneficiarios: newList }));
-                      }}
-                      placeholder="RG"
-                    />
-                  </div>
-                </div>
-
-                {planoSel && (ben.data_inclusao || '').trim() && (
-                  <BeneficiarioCarenciaPreview
-                    dataInclusao={ben.data_inclusao}
-                    diasCarencia={diasCarenciaDep}
-                    nome={ben.nome}
-                  />
-                )}
-              </div>
-            ))}
-          </div>
-        )}
+          <p className="text-center text-gray-500 dark:text-slate-400 py-8">
+            Nenhum dependente adicionado — use o botão <strong>+ Adicionar Dependente</strong> acima.
+          </p>
+        ) : (() => {
+          const setBen = (idx: number, patch: Partial<(typeof form.beneficiarios)[number]>) => {
+            setForm((f) => ({
+              ...f,
+              beneficiarios: f.beneficiarios.map((item, i) => (i === idx ? { ...item, ...patch } : item)),
+            }));
+          };
+          const inputMini =
+            'h-9 w-full rounded-lg border border-gray-200 dark:border-slate-700 bg-white dark:bg-slate-950 px-2.5 text-xs text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 placeholder:text-gray-400 dark:placeholder:text-gray-600';
+          return (
+            <div className="overflow-x-auto rounded-xl border border-gray-200 dark:border-slate-700">
+              <table className="w-full min-w-[880px] text-xs">
+                <thead>
+                  <tr className="bg-gray-50 dark:bg-slate-800/60 text-gray-600 dark:text-slate-400 uppercase text-[10px] font-black tracking-wider">
+                    <th className="px-2 py-2.5 text-left w-8">#</th>
+                    <th className="px-2 py-2.5 text-left min-w-[180px]">Nome completo</th>
+                    <th className="px-2 py-2.5 text-left w-44">Parentesco *</th>
+                    <th className="px-2 py-2.5 text-left w-36">Filiação</th>
+                    <th className="px-2 py-2.5 text-left w-36">Nascimento</th>
+                    <th className="px-2 py-2.5 text-left w-36">CPF</th>
+                    <th className="px-2 py-2.5 text-left w-28">RG</th>
+                    <th className="px-2 py-2.5 text-left w-28">Carência</th>
+                    <th className="px-2 py-2.5 w-10" aria-label="Remover"></th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100 dark:divide-slate-800">
+                  {form.beneficiarios.map((ben, idx) => {
+                    const st =
+                      planoSel && (ben.data_inclusao || '').trim()
+                        ? calcularStatusCarenciaDependente(ben.data_inclusao, diasCarenciaDep)
+                        : null;
+                    return (
+                      <tr key={ben.id || idx} className="bg-white dark:bg-slate-900/60 align-middle">
+                        <td className="px-2 py-2 text-gray-400 dark:text-slate-500 font-mono">{idx + 1}</td>
+                        <td className="px-2 py-2">
+                          <input
+                            className={inputMini}
+                            autoComplete="off"
+                            placeholder="Nome do dependente"
+                            value={ben.nome}
+                            onChange={(e) => setBen(idx, { nome: e.target.value })}
+                          />
+                        </td>
+                        <td className="px-2 py-2">
+                          <ParentescoDependenteSelect
+                            label=""
+                            required
+                            className="!h-9 !px-2 !pr-7 !text-xs !rounded-lg !bg-white dark:!bg-slate-950"
+                            value={ben.parentesco}
+                            onChange={(e) =>
+                              setBen(idx, { parentesco: normalizarParentescoDependente(e.target.value) })
+                            }
+                          />
+                        </td>
+                        <td className="px-2 py-2">
+                          {ben.id && isEdit ? (
+                            <div
+                              className="flex h-9 items-center rounded-lg border border-gray-200 dark:border-slate-700 bg-gray-100/80 dark:bg-slate-800/60 px-2.5 text-xs text-gray-600 dark:text-slate-300"
+                              title="Definida no cadastro — não pode ser alterada na edição."
+                            >
+                              {ben.data_inclusao ? formatarDataIsoPtBr(ben.data_inclusao) : '—'}
+                            </div>
+                          ) : (
+                            <input
+                              type="date"
+                              className={inputMini}
+                              min={filiacaoDataLivreNoCadastro ? undefined : limitesFiliacao?.min}
+                              max={filiacaoDataLivreNoCadastro ? undefined : limitesFiliacao?.max}
+                              title={
+                                filiacaoDataLivreNoCadastro
+                                  ? 'Data real de filiação do dependente'
+                                  : mensagemLimiteDataFiliacaoDependente(dataInicioCtr)
+                              }
+                              value={ben.data_inclusao || ''}
+                              onChange={(e) =>
+                                setBen(idx, { data_inclusao: (e.target.value || '').slice(0, 10) })
+                              }
+                            />
+                          )}
+                        </td>
+                        <td className="px-2 py-2">
+                          <input
+                            type="date"
+                            className={inputMini}
+                            value={ben.data_nascimento}
+                            onChange={(e) => setBen(idx, { data_nascimento: e.target.value })}
+                          />
+                        </td>
+                        <td className="px-2 py-2">
+                          <input
+                            className={inputMini}
+                            placeholder="000.000.000-00"
+                            value={ben.cpf || ''}
+                            onChange={(e) => setBen(idx, { cpf: maskCpf(e.target.value) })}
+                          />
+                        </td>
+                        <td className="px-2 py-2">
+                          <input
+                            className={inputMini}
+                            placeholder="RG"
+                            value={ben.rg || ''}
+                            onChange={(e) => setBen(idx, { rg: e.target.value })}
+                          />
+                        </td>
+                        <td className="px-2 py-2">
+                          {st ? (
+                            <span
+                              className={`inline-flex items-center px-2 py-1 rounded-full text-[10px] font-bold whitespace-nowrap ${
+                                st.emCarencia
+                                  ? 'bg-amber-100 dark:bg-amber-900/50 text-amber-900 dark:text-amber-200'
+                                  : 'bg-emerald-100 dark:bg-emerald-900/50 text-emerald-900 dark:text-emerald-200'
+                              }`}
+                              title={
+                                st.emCarencia
+                                  ? `Em carência — faltam ${st.diasRestantes} dia(s) (até ${formatarDataIsoPtBr(st.dataFimCarencia)})`
+                                  : 'Carência encerrada — cobertura ativa'
+                              }
+                            >
+                              {st.emCarencia ? `Faltam ${st.diasRestantes}d` : 'Ativa'}
+                            </span>
+                          ) : (
+                            <span
+                              className="text-gray-400 dark:text-slate-500"
+                              title={planoSel ? 'Informe a data de filiação para calcular a carência.' : 'Selecione o plano para calcular a carência.'}
+                            >
+                              —
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-2 py-2 text-center">
+                          <button
+                            type="button"
+                            className="p-1.5 rounded-lg text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors"
+                            title="Remover dependente"
+                            onClick={() =>
+                              setForm((f) => ({
+                                ...f,
+                                beneficiarios: f.beneficiarios.filter((_, i) => i !== idx),
+                              }))
+                            }
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          );
+        })()}
       </Card>
     );
   };
@@ -2511,8 +2510,8 @@ export const ClienteForm: React.FC = () => {
                   ) : (
                     <p className="text-green-700 dark:text-emerald-300 text-xs">
                       {form.beneficiarios.filter((b) => (b.nome || '').trim()).length > 0
-                        ? `${form.beneficiarios.filter((b) => (b.nome || '').trim()).length} dependente(s) importado(s) do cadastro — confira na próxima etapa.`
-                        : 'Nenhum dependente no cadastro deste cliente (você pode incluir na etapa Contrato).'}
+                        ? `${form.beneficiarios.filter((b) => (b.nome || '').trim()).length} dependente(s) importado(s) do cadastro — confira na etapa Dependentes.`
+                        : 'Nenhum dependente no cadastro deste cliente (você pode incluir na etapa Dependentes).'}
                       {form.forma_pagamento_preferencial
                         ? ` • Pagamento: ${form.forma_pagamento_preferencial}`
                         : ''}
@@ -2559,7 +2558,6 @@ export const ClienteForm: React.FC = () => {
                 <div className="md:col-span-2">
                   <Input label="Nome Completo *" name="nome" value={form.nome} onChange={handleChange} required />
                 </div>
-                <Input label="Nome Social" name="nome_social" value={form.nome_social} onChange={handleChange} placeholder="Opcional" />
                 <Input
                   label={
                     isEdit || migracaoSemCpfObrigatorio
@@ -2579,7 +2577,6 @@ export const ClienteForm: React.FC = () => {
                         : 'Obrigatório em cadastros novos (marque migração acima ou use contrato de migração).'
                   }
                 />
-                <Input label="RG" name="rg" value={form.rg} onChange={handleChange} placeholder="Opcional" />
                 <Input
                   label="Data de nascimento (opcional)"
                   name="data_nascimento"
@@ -2587,7 +2584,6 @@ export const ClienteForm: React.FC = () => {
                   value={form.data_nascimento}
                   onChange={handleChange}
                 />
-                <Input label="E-mail" name="email" type="email" value={form.email} onChange={handleChange} placeholder="Opcional" />
                 <div className="space-y-1">
                   <Input
                     label="Telefone Principal *" name="telefone_principal" value={form.telefone_principal}
@@ -2614,24 +2610,37 @@ export const ClienteForm: React.FC = () => {
                     </div>
                   )}
                 </div>
-                <Select label="Sexo" name="sexo" value={form.sexo} onChange={handleChange}>
-                  <option value="">Selecionar...</option>
-                  <option value="M">Masculino</option>
-                  <option value="F">Feminino</option>
-                  <option value="Outro">Outro</option>
-                </Select>
-                <Select label="Estado Civil" name="estado_civil" value={form.estado_civil} onChange={handleChange}>
-                  <option value="">Selecionar...</option>
-                  <option value="solteiro">Solteiro(a)</option>
-                  <option value="casado">Casado(a)</option>
-                  <option value="divorciado">Divorciado(a)</option>
-                  <option value="viuvo">Viúvo(a)</option>
-                  <option value="uniao_estavel">União Estável</option>
-                </Select>
-                <Input label="Profissão" name="profissao" value={form.profissao} onChange={handleChange} />
-                <Input label="Nome da Mãe" name="nome_mae" value={form.nome_mae} onChange={handleChange} />
-                <Input label="Nome do Pai" name="nome_pai" value={form.nome_pai} onChange={handleChange} />
+                <div className="md:col-span-2">
+                  <Input label="E-mail" name="email" type="email" value={form.email} onChange={handleChange} placeholder="Opcional" />
+                </div>
               </div>
+
+              <details className="rounded-xl border border-gray-200 dark:border-slate-700 bg-gray-50/50 dark:bg-slate-800/40 group">
+                <summary className="cursor-pointer select-none px-4 py-3 text-sm font-semibold text-gray-700 dark:text-slate-300 hover:text-gray-900 dark:hover:text-white">
+                  Dados complementares (opcional) — nome social, RG, filiação, profissão…
+                </summary>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 px-4 pb-4 pt-1">
+                  <Input label="Nome Social" name="nome_social" value={form.nome_social} onChange={handleChange} placeholder="Opcional" />
+                  <Input label="RG" name="rg" value={form.rg} onChange={handleChange} placeholder="Opcional" />
+                  <Select label="Sexo" name="sexo" value={form.sexo} onChange={handleChange}>
+                    <option value="">Selecionar...</option>
+                    <option value="M">Masculino</option>
+                    <option value="F">Feminino</option>
+                    <option value="Outro">Outro</option>
+                  </Select>
+                  <Select label="Estado Civil" name="estado_civil" value={form.estado_civil} onChange={handleChange}>
+                    <option value="">Selecionar...</option>
+                    <option value="solteiro">Solteiro(a)</option>
+                    <option value="casado">Casado(a)</option>
+                    <option value="divorciado">Divorciado(a)</option>
+                    <option value="viuvo">Viúvo(a)</option>
+                    <option value="uniao_estavel">União Estável</option>
+                  </Select>
+                  <Input label="Profissão" name="profissao" value={form.profissao} onChange={handleChange} />
+                  <Input label="Nome da Mãe" name="nome_mae" value={form.nome_mae} onChange={handleChange} />
+                  <Input label="Nome do Pai" name="nome_pai" value={form.nome_pai} onChange={handleChange} />
+                </div>
+              </details>
             </Card>
           )
         )}
@@ -2891,32 +2900,29 @@ export const ClienteForm: React.FC = () => {
         )}
 
 
-        {/* Step 2 (contrato): Plano & Beneficiários */}
+        {/* Step 2 (contrato): Plano & Contrato */}
         {isContractFlow && step === 2 && (
           <div className="space-y-6">
             {clienteSelecionado && (
-              <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
+              <div className="rounded-lg border border-emerald-200 dark:border-emerald-800/50 bg-emerald-50 dark:bg-emerald-950/40 px-4 py-3 text-sm text-emerald-900 dark:text-emerald-200">
                 <p className="font-semibold">Cliente: {clienteSelecionado.nome}</p>
-                <p className="text-xs mt-1 text-emerald-800">
+                <p className="text-xs mt-1 text-emerald-800 dark:text-emerald-300">
                   CPF {clienteSelecionado.cpf || '—'} • {clienteSelecionado.telefone_principal || '—'} •{' '}
                   {clienteSelecionado.endereco_cidade || '—'}/{clienteSelecionado.endereco_estado || '—'}
                 </p>
               </div>
             )}
             {renderPlanoContratoCard()}
+          </div>
+        )}
+
+        {/* Step 3 (contrato): Dependentes */}
+        {isContractFlow && step === 3 && (
+          <div className="space-y-6">
             <div className="rounded-lg border border-blue-100 dark:border-blue-900/50 bg-blue-50 dark:bg-blue-950/40 px-4 py-3 text-sm text-blue-900 dark:text-blue-200">
-              Os <strong>dependentes já cadastrados</strong> na ficha do cliente foram trazidos automaticamente.
-              Você pode editar, remover ou incluir novos. Informe a forma de pagamento; se for cobrador, escolha quem
-              fará a cobrança.
+              Os <strong>dependentes já cadastrados</strong> na ficha do cliente foram trazidos automaticamente —
+              edite, remova ou inclua novos direto na lista abaixo. Esta etapa é opcional.
             </div>
-            {form.beneficiarios.filter((b) => (b.nome || '').trim()).length > 0 && (
-              <BeneficiariosCadastroTabela
-                beneficiarios={form.beneficiarios}
-                plano={planos.find((p) => p.id === form.plano_id) ?? null}
-                dataInicioContrato={dataInicioContratoEfetiva}
-                titulo="Dependentes do cadastro do cliente"
-              />
-            )}
             {renderBeneficiariosCard({ requirePlano: true })}
           </div>
         )}
@@ -2930,14 +2936,6 @@ export const ClienteForm: React.FC = () => {
               <strong>Contratos → Novo Contrato</strong>.
             </div>
             {renderPlanoContratoCard()}
-            {form.beneficiarios.filter((b) => (b.nome || '').trim()).length > 0 && (
-              <BeneficiariosCadastroTabela
-                beneficiarios={form.beneficiarios}
-                plano={planos.find((p) => p.id === form.plano_id) ?? null}
-                dataInicioContrato={dataInicioContratoEfetiva}
-                titulo="Dependentes já informados — conferir carência com o plano"
-              />
-            )}
             {renderBeneficiariosCard({ requirePlano: !!form.plano_id })}
           </div>
         )}
@@ -3006,7 +3004,7 @@ export const ClienteForm: React.FC = () => {
               {renderSeletorFormaPagamentoECobrador()}
             </div>
 
-            <h3 className="text-lg font-semibold text-gray-900 dark:text-slate-100 border-b border-gray-200 dark:border-slate-700 pb-3 pt-4">Informações de CRM</h3>
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-slate-100 border-b border-gray-200 dark:border-slate-700 pb-3 pt-4">Comercial</h3>
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               <Select
                 label="Vendedor responsável"
@@ -3055,6 +3053,13 @@ export const ClienteForm: React.FC = () => {
                 <option value="interno">Vendedor interno</option>
                 <option value="externo">Vendedor externo</option>
               </Select>
+            </div>
+
+            <details className="rounded-xl border border-gray-200 dark:border-slate-700 bg-gray-50/50 dark:bg-slate-800/40">
+              <summary className="cursor-pointer select-none px-4 py-3 text-sm font-semibold text-gray-700 dark:text-slate-300 hover:text-gray-900 dark:hover:text-white">
+                Dados de CRM (opcional) — origem do cliente, relacionamento, funcionário
+              </summary>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 px-4 pb-4 pt-1">
               <Select label="Origem / Canal" name="origem_canal" value={form.origem_canal} onChange={handleChange}>
                 <option value="">Selecionar...</option>
                 <option value={ORIGEM_CANAL_MIGRACAO}>Migração / contrato antigo</option>
@@ -3074,7 +3079,7 @@ export const ClienteForm: React.FC = () => {
                 <option value="quente">Quente (Quase fechando)</option>
                 <option value="fidelizado">Fidelizado (Cliente antigo)</option>
               </Select>
-              <div className="md:col-span-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-900/40 px-4 py-3">
+              <div className="md:col-span-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50/70 dark:bg-slate-900/40 px-4 py-3">
                 <label className="flex items-start gap-3 cursor-pointer">
                   <input
                     type="checkbox"
@@ -3091,7 +3096,8 @@ export const ClienteForm: React.FC = () => {
                   </span>
                 </label>
               </div>
-            </div>
+              </div>
+            </details>
           </Card>
         )}
 

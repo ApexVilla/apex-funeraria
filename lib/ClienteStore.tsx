@@ -420,6 +420,13 @@ export interface AssinaturaSB {
     cliente_id: string;
     plano_id: string;
     vendedor_id?: string;
+    /**
+     * Vendedor exibido na lista: quem criou a proposta;
+     * em migração (ou sem proposta), o vendedor do contrato.
+     */
+    vendedor_nome?: string;
+    /** Quem lançou ou gerou o contrato no sistema (pós-venda / auditoria). */
+    usuario_lancamento_nome?: string;
     valor_mensal_centavos: number;
     valor_anual_centavos?: number;
     taxa_adesao_centavos?: number;
@@ -1263,7 +1270,7 @@ export const ClienteStoreProvider: React.FC<{ children: React.ReactNode }> = ({ 
         try {
         let q = supabase
             .from('assinaturas')
-            .select('*, clientes(nome, cpf)')
+            .select('*, clientes(nome, cpf), vendedor:vendedor_id ( nome )')
             .is('deleted_at', null)
             .order('created_at', { ascending: false });
         if (ids.length === 1) q = q.eq('empresa_id', ids[0]);
@@ -1307,6 +1314,76 @@ export const ClienteStoreProvider: React.FC<{ children: React.ReactNode }> = ({ 
             const list = assinaturasPorCliente.get(a.cliente_id) || [];
             list.push(a.id);
             assinaturasPorCliente.set(a.cliente_id, list);
+        }
+
+        /** Por assinatura: criador da proposta + responsável pelo lançamento (pós-venda). */
+        const propostaInfoPorAssinatura = new Map<
+            string,
+            { criadorNome: string; lancadorNome: string }
+        >();
+
+        if (assinaturaIds.length > 0) {
+            const { data: propostasData } = await supabase
+                .from('propostas_venda')
+                .select(
+                    'assinatura_id, vendedor_id, pos_venda_responsavel_id, criador:vendedor_id(nome), lancador:pos_venda_responsavel_id(nome)',
+                )
+                .in('assinatura_id', assinaturaIds);
+            if (gen !== loadAllAssinaturasGenRef.current) return;
+
+            for (const p of propostasData || []) {
+                const aid = (p as { assinatura_id?: string }).assinatura_id;
+                if (!aid) continue;
+                const rawCriador = (p as { criador?: unknown }).criador;
+                const criador = Array.isArray(rawCriador) ? rawCriador[0] : rawCriador;
+                const criadorNome =
+                    criador && typeof criador === 'object'
+                        ? String((criador as { nome?: string }).nome || '').trim()
+                        : '';
+                const rawLanc = (p as { lancador?: unknown }).lancador;
+                const lanc = Array.isArray(rawLanc) ? rawLanc[0] : rawLanc;
+                const lancadorNome =
+                    lanc && typeof lanc === 'object'
+                        ? String((lanc as { nome?: string }).nome || '').trim()
+                        : '';
+                propostaInfoPorAssinatura.set(aid, {
+                    criadorNome,
+                    lancadorNome,
+                });
+            }
+        }
+
+        /** Fallback: quem gerou o contrato na auditoria (quando não há pós-venda). */
+        const lancadorTimelinePorAssinatura = new Map<string, string>();
+        const idsSemLancador = assinaturaIds.filter(
+            (id) => !(propostaInfoPorAssinatura.get(id)?.lancadorNome || '').trim(),
+        );
+        if (idsSemLancador.length > 0) {
+            for (let i = 0; i < idsSemLancador.length; i += 200) {
+                const chunk = idsSemLancador.slice(i, i + 200);
+                const { data: timelineData } = await supabase
+                    .from('timeline_clientes')
+                    .select(
+                        'referencia_id, criado_por, autor:users!timeline_clientes_criado_por_fkey(nome)',
+                    )
+                    .eq('categoria', 'contrato')
+                    .eq('referencia_tipo', 'assinatura')
+                    .in('referencia_id', chunk)
+                    .ilike('titulo', 'Contrato criado%')
+                    .order('created_at', { ascending: true });
+                if (gen !== loadAllAssinaturasGenRef.current) return;
+                for (const t of timelineData || []) {
+                    const rid = String((t as { referencia_id?: string }).referencia_id || '');
+                    if (!rid || lancadorTimelinePorAssinatura.has(rid)) continue;
+                    const rawAutor = (t as { autor?: unknown }).autor;
+                    const autor = Array.isArray(rawAutor) ? rawAutor[0] : rawAutor;
+                    const nome =
+                        autor && typeof autor === 'object'
+                            ? String((autor as { nome?: string }).nome || '').trim()
+                            : '';
+                    if (nome) lancadorTimelinePorAssinatura.set(rid, nome);
+                }
+            }
         }
 
         const depPorAssinatura = new Map<string, { nome: string; cpf?: string }[]>();
@@ -1356,14 +1433,32 @@ export const ClienteStoreProvider: React.FC<{ children: React.ReactNode }> = ({ 
                 valor,
                 pCodigo,
             );
+            const rawVend = a.vendedor;
+            const vend = Array.isArray(rawVend) ? rawVend[0] : rawVend;
+            const vendedorContratoNome =
+                vend && typeof vend === 'object'
+                    ? String((vend as { nome?: string }).nome || '').trim()
+                    : '';
+            const propInfo = propostaInfoPorAssinatura.get(a.id);
+            // Vendedor = quem criou a proposta; em migração/sem proposta = vendedor do contrato
+            const vendedorNome =
+                (propInfo?.criadorNome || '').trim() || vendedorContratoNome;
+            // Usuário de lançamento = quem gerou/lançou o contrato (não o vendedor)
+            const usuarioLancamento =
+                (propInfo?.lancadorNome || '').trim() ||
+                lancadorTimelinePorAssinatura.get(a.id) ||
+                '';
+            const { vendedor: _vend, ...rest } = a;
 
             return {
-                ...a,
+                ...rest,
                 plano_nome: pNome,
                 plano_codigo: pCodigo,
                 cliente_nome: a.clientes?.nome || 'Cliente desconhecido',
                 cliente_cpf: a.clientes?.cpf || undefined,
                 dependentes: depPorAssinatura.get(a.id) || [],
+                ...(vendedorNome ? { vendedor_nome: vendedorNome } : {}),
+                ...(usuarioLancamento ? { usuario_lancamento_nome: usuarioLancamento } : {}),
             };
         });
         if (gen !== loadAllAssinaturasGenRef.current) return;

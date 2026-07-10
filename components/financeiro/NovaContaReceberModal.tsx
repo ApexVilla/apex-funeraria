@@ -44,6 +44,11 @@ import {
 import { CompetenciaMesAnoInput } from './CompetenciaMesAnoInput';
 import { inferirTipoDocumentoReceber } from '../../lib/inferirTipoDocumento';
 import { dataHojeIsoLocal } from '../../lib/contratoDatas';
+import {
+  listarMesesMensalidadeOcupados,
+  sugerirMesMensalidadeFaltante,
+  vencimentoMensalidadeNoMes,
+} from '../../lib/mensalidadesAssinatura';
 
 export interface NovaContaReceberModalProps {
   onClose: () => void;
@@ -188,6 +193,12 @@ export const NovaContaReceberModal: React.FC<NovaContaReceberModalProps> = ({
   const [observacoes, setObservacoes] = useState('');
   const [pixPagador, setPixPagador] = useState<PixPagadorState>(pixPagadorStateInicial);
 
+  /** Modo mensalidade de contrato: 1 mês = 1 parcela, dia fixo, sem duplicar. */
+  const modoMensalidadeAssinatura = Boolean(assinaturaId && clienteId);
+  const [diaVencimentoAssinatura, setDiaVencimentoAssinatura] = useState(5);
+  const [mesesOcupados, setMesesOcupados] = useState<Set<string>>(() => new Set());
+  const [carregandoAssinatura, setCarregandoAssinatura] = useState(false);
+
   // ─── Cliente/Fornecedor search ───
   const [pessoa, setPessoa] = useState<PessoaSelectItem | null>(null);
   const [buscaCliente, setBuscaCliente] = useState('');
@@ -259,6 +270,66 @@ export const NovaContaReceberModal: React.FC<NovaContaReceberModalProps> = ({
     };
     carregarClientePredefinido();
   }, [clienteId]);
+
+  // Mensalidade de contrato: carrega dia de vencimento, valor e meses já ocupados
+  useEffect(() => {
+    if (!modoMensalidadeAssinatura || !assinaturaId) return;
+    let cancelado = false;
+    setCarregandoAssinatura(true);
+    (async () => {
+      try {
+        const [{ data: ass, error: assErr }, ocupados] = await Promise.all([
+          supabase
+            .from('assinaturas')
+            .select('dia_vencimento, valor_mensal_centavos, data_primeiro_vencimento')
+            .eq('id', assinaturaId)
+            .is('deleted_at', null)
+            .maybeSingle(),
+          listarMesesMensalidadeOcupados(assinaturaId),
+        ]);
+        if (assErr) throw assErr;
+        if (cancelado) return;
+
+        const dia = Math.max(1, Math.min(31, Number(ass?.dia_vencimento) || 5));
+        setDiaVencimentoAssinatura(dia);
+        setMesesOcupados(ocupados);
+        setParcelar(false);
+
+        const mesSugerido = sugerirMesMensalidadeFaltante(ocupados);
+        setDataCompetenciaYm(mesSugerido);
+        setDataVencimento(vencimentoMensalidadeNoMes(mesSugerido, dia));
+
+        const valor = Number(ass?.valor_mensal_centavos) || 0;
+        if (valor > 0) {
+          setValorCentavos(valor);
+          setValorInput(centavosParaInputMoeda(valor));
+        }
+        if (!descricao.trim()) {
+          setDescricao('Mensalidade');
+        }
+      } catch (err) {
+        console.error('[NovaContaReceberModal] erro ao carregar assinatura:', err);
+      } finally {
+        if (!cancelado) setCarregandoAssinatura(false);
+      }
+    })();
+    return () => {
+      cancelado = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- só ao abrir com assinatura
+  }, [modoMensalidadeAssinatura, assinaturaId]);
+
+  const aplicarCompetenciaMensalidade = (ym: string) => {
+    setDataCompetenciaYm(ym);
+    if (modoMensalidadeAssinatura) {
+      setDataVencimento(vencimentoMensalidadeNoMes(ym, diaVencimentoAssinatura));
+    }
+  };
+
+  const mesCompetenciaOcupado =
+    modoMensalidadeAssinatura && dataCompetenciaYm
+      ? mesesOcupados.has(dataCompetenciaYm.slice(0, 7))
+      : false;
 
   // Busca clientes + fornecedores (com debounce) — respeita visão “todas as empresas do grupo”
   useEffect(() => {
@@ -511,6 +582,18 @@ export const NovaContaReceberModal: React.FC<NovaContaReceberModalProps> = ({
       setError('Selecione a unidade (filial) do título.');
       return;
     }
+    if (modoMensalidadeAssinatura) {
+      if (mesCompetenciaOcupado) {
+        setError(
+          `Já existe mensalidade em ${ymToDisplayBr(dataCompetenciaYm)}. Escolha um mês sem parcela (ex.: o mês que foi excluído).`,
+        );
+        return;
+      }
+      if (parcelar) {
+        setError('Mensalidade de contrato não pode ser parcelada aqui. Gere um mês por vez.');
+        return;
+      }
+    }
     const nParcelas = caixaDireto ? 1 : (parcelar ? parcelasRascunho.length : 1);
 
     setLoading(true);
@@ -528,8 +611,13 @@ export const NovaContaReceberModal: React.FC<NovaContaReceberModalProps> = ({
       for (let i = 0; i < parcelasParaCriar.length; i++) {
         const parcela = parcelasParaCriar[i];
         const valor = parcela.valorCentavos;
-        const venc = parcela.dataVencimento;
-        const comp = ymToIsoDate(parcela.competenciaYm);
+        // Mensalidade: competência e vencimento no mesmo mês, dia fixo da assinatura.
+        const venc = modoMensalidadeAssinatura
+          ? vencimentoMensalidadeNoMes(parcela.competenciaYm, diaVencimentoAssinatura)
+          : parcela.dataVencimento;
+        const comp = modoMensalidadeAssinatura
+          ? venc
+          : ymToIsoDate(parcela.competenciaYm);
         const nParcelasTotal = parcelasParaCriar.length;
         const sufixo = nParcelasTotal > 1 ? ` (${parcela.numero}/${nParcelasTotal})` : '';
         const nomePessoa = String(pessoa?.nome || '').trim();
@@ -636,12 +724,18 @@ export const NovaContaReceberModal: React.FC<NovaContaReceberModalProps> = ({
           <div className="flex items-center gap-3 min-w-0 border-l-4 border-emerald-600 pl-3">
             <div className="min-w-0">
               <h2 className="text-base font-bold uppercase tracking-wider text-slate-900">
-                {caixaDireto ? 'Receita no Caixa' : 'Lançamento de Conta a Receber'}
+                {caixaDireto
+                  ? 'Receita no Caixa'
+                  : modoMensalidadeAssinatura
+                    ? 'Nova Mensalidade'
+                    : 'Lançamento de Conta a Receber'}
               </h2>
               <p className="text-xs text-slate-500 mt-0.5">
                 {caixaDireto
                   ? `Registro automático de recebimento no caixa correspondente à conta ${caixaDireto.contaLabel || ''}.`
-                  : 'Informe vencimento, competência (mês/ano) e data de recebimento se for baixar o título na hora (pode ser retroativa).'}
+                  : modoMensalidadeAssinatura
+                    ? 'Escolha um mês sem parcela. O vencimento usa o dia fixo do contrato.'
+                    : 'Informe vencimento, competência (mês/ano) e data de recebimento se for baixar o título na hora (pode ser retroativa).'}
               </p>
             </div>
           </div>
@@ -892,11 +986,26 @@ export const NovaContaReceberModal: React.FC<NovaContaReceberModalProps> = ({
                   <Input
                     type="date"
                     value={dataVencimento}
-                    onChange={(e) => setDataVencimento(e.target.value)}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setDataVencimento(v);
+                      if (modoMensalidadeAssinatura && v) {
+                        setDataCompetenciaYm(v.slice(0, 7));
+                        setDataVencimento(
+                          vencimentoMensalidadeNoMes(v.slice(0, 7), diaVencimentoAssinatura),
+                        );
+                      }
+                    }}
                     required
+                    disabled={modoMensalidadeAssinatura}
                   />
+                  {modoMensalidadeAssinatura && (
+                    <p className="text-[10px] text-slate-600 font-semibold">
+                      Dia {diaVencimentoAssinatura} de cada mês (fixo do contrato).
+                    </p>
+                  )}
                 </div>
-                {!parcelar && (
+                {!parcelar && !ocultarPagamento && (
                   <div className="space-y-1">
                     <label className="block text-[11px] font-bold text-emerald-700 uppercase tracking-wide">
                       Data de Recebimento
@@ -914,12 +1023,40 @@ export const NovaContaReceberModal: React.FC<NovaContaReceberModalProps> = ({
                 )}
                 <CompetenciaMesAnoInput
                   value={dataCompetenciaYm}
-                  onChange={setDataCompetenciaYm}
+                  onChange={aplicarCompetenciaMensalidade}
+                  label={modoMensalidadeAssinatura ? 'Mês da mensalidade' : undefined}
+                  error={
+                    mesCompetenciaOcupado
+                      ? 'Este mês já tem parcela. Escolha o mês excluído ou outro mês livre.'
+                      : undefined
+                  }
                 />
               </div>
 
+              {modoMensalidadeAssinatura && (
+                <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-900 font-semibold space-y-1">
+                  <p>
+                    Cada mês só pode ter <strong>uma</strong> mensalidade. Se excluiu janeiro, só
+                    pode recriar janeiro — não outro mês que já exista.
+                  </p>
+                  {carregandoAssinatura ? (
+                    <p className="text-amber-700">Carregando meses do contrato…</p>
+                  ) : mesCompetenciaOcupado ? (
+                    <p className="text-rose-700">
+                      {ymToDisplayBr(dataCompetenciaYm)} já está lançado. Selecione um mês sem
+                      parcela.
+                    </p>
+                  ) : (
+                    <p className="text-emerald-800">
+                      Mês livre: pode gerar {ymToDisplayBr(dataCompetenciaYm)} (venc.{' '}
+                      {dataVencimento.split('-').reverse().join('/')}).
+                    </p>
+                  )}
+                </div>
+              )}
+
               {/* Parcelamento */}
-              {!caixaDireto && (
+              {!caixaDireto && !modoMensalidadeAssinatura && (
               <div className={`rounded-lg border p-4 space-y-4 transition-colors ${
                 parcelar ? 'border-indigo-300 bg-indigo-50/50' : 'border-slate-200 bg-slate-50/60'
               }`}>
@@ -1159,7 +1296,7 @@ export const NovaContaReceberModal: React.FC<NovaContaReceberModalProps> = ({
               </button>
               <button
                 type="submit"
-                disabled={loading || (parcelar && !parcelasConferem)}
+                disabled={loading || (parcelar && !parcelasConferem) || mesCompetenciaOcupado}
                 className="h-10 px-5 bg-emerald-700 hover:bg-emerald-800 text-white font-semibold rounded-md text-sm transition flex items-center gap-2 outline-none disabled:opacity-50"
               >
                 {loading ? (
@@ -1171,9 +1308,11 @@ export const NovaContaReceberModal: React.FC<NovaContaReceberModalProps> = ({
                   ? 'Salvar e Receber no Caixa'
                   : receberAoSalvar
                     ? 'Salvar e Receber'
-                    : parcelar && totalParcelas > 1
-                      ? `Criar ${totalParcelas} Parcelas`
-                      : 'Salvar Lançamento'}
+                    : modoMensalidadeAssinatura
+                      ? 'Gerar Mensalidade'
+                      : parcelar && totalParcelas > 1
+                        ? `Criar ${totalParcelas} Parcelas`
+                        : 'Salvar Lançamento'}
               </button>
             </div>
           </div>

@@ -35,7 +35,9 @@ import {
   isSabadoFolgaEscala,
   isSabadoLocal,
   isSabadoTrabalhoEscala,
+  metaMinutosJornadaNormalForcada,
   metaMinutosNoDia,
+  metaSabadoMinutos,
   temEscalaSabadoAlternado,
 } from '../../lib/pontoEscala';
 import {
@@ -599,7 +601,7 @@ export const PontoEspelho: React.FC<PontoEspelhoProps> = ({ modoRH = false }) =>
       
       let metaDia = metaMinutosNoDia(pontoConfig, dia, temBatida, feriadosColaborador, feriasColaborador);
       if (jornadaNormalManual) {
-        metaDia = pontoConfig.carga_horaria_minutos;
+        metaDia = metaMinutosJornadaNormalForcada(pontoConfig, dia);
       } else if (justificado) {
         metaDia = 0;
       }
@@ -797,7 +799,7 @@ export const PontoEspelho: React.FC<PontoEspelhoProps> = ({ modoRH = false }) =>
                 
                 let metaDia = metaMinutosNoDia(pontoConfig, dia, temBatida, feriadosColaborador, feriasColaborador);
                 if (jornadaNormalManual) {
-                  metaDia = pontoConfig.carga_horaria_minutos;
+                  metaDia = metaMinutosJornadaNormalForcada(pontoConfig, dia);
                 } else if (justificado) {
                   metaDia = 0;
                 }
@@ -1220,10 +1222,12 @@ export const PontoEspelho: React.FC<PontoEspelhoProps> = ({ modoRH = false }) =>
                     {isRegime12x36(pontoConfig)
                       ? ' · Meta 12h nos dias com batida de ponto'
                       : temEscalaSabadoAlternado(pontoConfig)
-                        ? ` · Meta ${formatarDuracaoPonto(pontoConfig.carga_horaria_minutos)}/dia útil · ${formatarDuracaoPonto(pontoConfig.meta_sabado_minutos ?? 4 * 60)} no sábado de plantão`
+                        ? ` · Meta ${formatarDuracaoPonto(pontoConfig.carga_horaria_minutos)}/dia útil · ${formatarDuracaoPonto(metaSabadoMinutos(pontoConfig))} no sábado de plantão`
                         : pontoConfig.regime === 'cargo_confianca'
                           ? ' · Isento de registro de ponto'
-                          : ` · Meta: ${formatarDuracaoPonto(cargaMetaMinutos)}/dia útil`}
+                          : pontoConfig.regime === 'seis_horas'
+                            ? ` · Meta: ${formatarDuracaoPonto(cargaMetaMinutos)}/dia (inclui sábado)`
+                            : ` · Meta: ${formatarDuracaoPonto(cargaMetaMinutos)}/dia útil · ${formatarDuracaoPonto(metaSabadoMinutos(pontoConfig))} no sábado`}
                   </p>
                 </div>
               </div>

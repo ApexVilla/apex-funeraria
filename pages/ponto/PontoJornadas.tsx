@@ -140,6 +140,11 @@ export const PontoJornadas: React.FC = () => {
           registrar ponto, a meta é 12h — inclusive em folga ou dias seguidos, sem necessidade de convocação prévia.
         </p>
         <p className="text-sm text-amber-800 mt-2">
+          Jornada de <strong>8 horas</strong>: dias úteis com meta de 8h; sábado trabalhado com meta de{' '}
+          <strong>4h</strong> (nunca 8h). Horas além das 4h no sábado entram no saldo. Domingo sem escala
+          continua como hora extra.
+        </p>
+        <p className="text-sm text-amber-800 mt-2">
           Jornada de <strong>6 horas</strong> inclui sábado como dia útil: o trabalho no sábado usa a meta de 6h
           (não conta a jornada inteira como hora extra).
         </p>

@@ -164,15 +164,19 @@ export const ParcelasPorAnoAccordion: React.FC<ParcelasPorAnoAccordionProps> = (
                                             const isOverdue =
                                                 !temEstorno &&
                                                 parcelaEstaVencida(m.data_vencimento, m.status);
-                                            const mesRef = m.data_competencia
-                                                ? new Date(`${m.data_competencia.slice(0, 10)}T12:00:00`).toLocaleString(
-                                                      'pt-BR',
-                                                      { month: 'short' },
-                                                  )
-                                                : new Date(`${m.data_vencimento.slice(0, 10)}T12:00:00`).toLocaleString(
-                                                      'pt-BR',
-                                                      { month: 'short' },
-                                                  );
+                                            const mesRef = (() => {
+                                                // Mês visual = vencimento (competência desalinhada não deve confundir).
+                                                const iso = (
+                                                    m.data_vencimento ||
+                                                    m.data_competencia ||
+                                                    ''
+                                                ).slice(0, 10);
+                                                if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return '—';
+                                                return new Date(`${iso}T12:00:00`).toLocaleString(
+                                                    'pt-BR',
+                                                    { month: 'short' },
+                                                );
+                                            })();
                                             const isSelected = selectedId === m.id;
                                             const valor =
                                                 (m.valor_original_centavos || m.valor_total_centavos || 0) / 100;

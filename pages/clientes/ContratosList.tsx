@@ -98,7 +98,17 @@ export const ContratosList: React.FC = () => {
     const { showToast } = useToast();
     const [searchTerm, setSearchTerm] = useState('');
     const [statCardFilter, setStatCardFilter] = useState<StatCardFilter>('');
-    const [columnFilters, setColumnFilters] = useState<{ status: string[]; plano: string[] }>({ status: [], plano: [] });
+    const [columnFilters, setColumnFilters] = useState<{
+        status: string[];
+        plano: string[];
+        vendedor: string[];
+        usuario_lancamento: string[];
+    }>({
+        status: [],
+        plano: [],
+        vendedor: [],
+        usuario_lancamento: [],
+    });
     const [filterMenuColumn, setFilterMenuColumn] = useState<string | null>(null);
     const [filterMenuPosition, setFilterMenuPosition] = useState<{ x: number; y: number } | undefined>(undefined);
     const [dropdownSearch, setDropdownSearch] = useState('');
@@ -225,16 +235,25 @@ export const ContratosList: React.FC = () => {
         return (centavos / 100).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
     };
 
-    const getUniqueValuesForColumn = (columnKey: 'status' | 'plano'): string[] => {
+    type ColumnFilterKey = 'status' | 'plano' | 'vendedor' | 'usuario_lancamento';
+
+    const getUniqueValuesForColumn = (columnKey: ColumnFilterKey): string[] => {
         const set = new Set<string>();
         assinaturas.forEach((a) => {
             if (columnKey === 'status') set.add(a.status || '—');
             if (columnKey === 'plano') set.add(a.plano_nome || '—');
+            if (columnKey === 'vendedor') set.add((a.vendedor_nome || '').trim() || '—');
+            if (columnKey === 'usuario_lancamento') set.add((a.usuario_lancamento_nome || '').trim() || '—');
         });
         return Array.from(set).sort((a, b) => a.localeCompare(b, 'pt-BR'));
     };
 
-    const COLUMN_LABELS: Record<string, string> = { status: 'Status', plano: 'Plano' };
+    const COLUMN_LABELS: Record<ColumnFilterKey, string> = {
+        status: 'Status',
+        plano: 'Plano',
+        vendedor: 'Vendedor',
+        usuario_lancamento: 'Usuário de lançamento',
+    };
 
     const STATUS_FRIENDLY: Record<string, string> = {
         ativo: 'Ativo', cancelado: 'Cancelado', cancelada: 'Cancelado',
@@ -259,7 +278,7 @@ export const ContratosList: React.FC = () => {
         }
     };
 
-    const handleToggleColumnFilter = (columnKey: 'status' | 'plano', value: string) => {
+    const handleToggleColumnFilter = (columnKey: ColumnFilterKey, value: string) => {
         setColumnFilters((prev) => {
             const current = prev[columnKey];
             const updated = current.includes(value) ? current.filter((v) => v !== value) : [...current, value];
@@ -347,15 +366,38 @@ export const ContratosList: React.FC = () => {
                 columnFilters.status.includes(a.status || '') ||
                 (columnFilters.status.includes('cancelado') && a.status === 'cancelada');
             const matchesPlano = columnFilters.plano.length === 0 || columnFilters.plano.includes(a.plano_nome || '—');
+            const vendedorNome = (a.vendedor_nome || '').trim() || '—';
+            const matchesVendedor =
+                columnFilters.vendedor.length === 0 || columnFilters.vendedor.includes(vendedorNome);
+            const usuarioLanc = (a.usuario_lancamento_nome || '').trim() || '—';
+            const matchesUsuarioLancamento =
+                columnFilters.usuario_lancamento.length === 0 ||
+                columnFilters.usuario_lancamento.includes(usuarioLanc);
             const matchesCard = matchesStatCardFilter(a);
-            return matchesSearch && matchesStatus && matchesPlano && matchesCard;
+            return (
+                matchesSearch &&
+                matchesStatus &&
+                matchesPlano &&
+                matchesVendedor &&
+                matchesUsuarioLancamento &&
+                matchesCard
+            );
         });
     }, [assinaturas, searchTerm, columnFilters, statCardFilter, hojeIso]);
 
     const totalPages = Math.ceil(filtered.length / pageSize);
     const paginated = filtered.slice((page - 1) * pageSize, page * pageSize);
 
-    useEffect(() => { setPage(1); }, [searchTerm, columnFilters.status.join(','), columnFilters.plano.join(',|'), statCardFilter]);
+    useEffect(() => {
+        setPage(1);
+    }, [
+        searchTerm,
+        columnFilters.status.join(','),
+        columnFilters.plano.join(',|'),
+        columnFilters.vendedor.join(',|'),
+        columnFilters.usuario_lancamento.join(',|'),
+        statCardFilter,
+    ]);
 
     const getStatusBadge = (status: string) => {
         const map: Record<string, { variant: 'success' | 'danger' | 'warning' | 'default', label: string }> = {
@@ -566,7 +608,11 @@ export const ContratosList: React.FC = () => {
             </div>
 
             {/* Badges de filtros de coluna ativos */}
-            {(columnFilters.status.length > 0 || columnFilters.plano.length > 0 || statCardFilter === 'feitos_hoje') && (
+            {(columnFilters.status.length > 0 ||
+                columnFilters.plano.length > 0 ||
+                columnFilters.vendedor.length > 0 ||
+                columnFilters.usuario_lancamento.length > 0 ||
+                statCardFilter === 'feitos_hoje') && (
                 <div className="flex flex-wrap items-center gap-2 -mt-2">
                     <span className="text-xs text-gray-500 font-medium">Filtros ativos:</span>
                     {statCardFilter === 'feitos_hoje' && (
@@ -588,11 +634,13 @@ export const ContratosList: React.FC = () => {
                                 key={`${key}-${val}`}
                                 className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-blue-50 text-blue-700 border border-blue-200"
                             >
-                                <span className="text-blue-500 font-bold uppercase text-[10px]">{COLUMN_LABELS[key]}:</span>
-                                {key === 'status' ? (STATUS_FRIENDLY[val] || val) : val}
+                                <span className="text-blue-500 font-bold uppercase text-[10px]">
+                                    {COLUMN_LABELS[key as ColumnFilterKey]}:
+                                </span>
+                                {key === 'status' ? STATUS_FRIENDLY[val] || val : val}
                                 <button
                                     type="button"
-                                    onClick={() => handleToggleColumnFilter(key as 'status' | 'plano', val)}
+                                    onClick={() => handleToggleColumnFilter(key as ColumnFilterKey, val)}
                                     className="ml-0.5 text-blue-400 hover:text-blue-700 transition-colors"
                                 >
                                     ×
@@ -603,7 +651,12 @@ export const ContratosList: React.FC = () => {
                     <button
                         type="button"
                         onClick={() => {
-                            setColumnFilters({ status: [], plano: [] });
+                            setColumnFilters({
+                                status: [],
+                                plano: [],
+                                vendedor: [],
+                                usuario_lancamento: [],
+                            });
                             setStatCardFilter('');
                         }}
                         className="text-xs text-red-500 hover:underline font-semibold"
@@ -649,6 +702,42 @@ export const ContratosList: React.FC = () => {
                                 <th>Data Início</th>
                                 <th>Tempo</th>
                                 <th className="text-right">Valor</th>
+                                <th>
+                                    <div className="flex items-center gap-1 select-none">
+                                        <span title="Quem criou a proposta; em migração, o vendedor do contrato">
+                                            Vendedor
+                                        </span>
+                                        <button
+                                            onClick={(e) => handleOpenFilterMenu('vendedor', e)}
+                                            className={`p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors ${
+                                                columnFilters.vendedor.length > 0
+                                                    ? 'text-blue-600 bg-blue-50 ring-1 ring-blue-100'
+                                                    : 'text-gray-400 hover:text-gray-600'
+                                            }`}
+                                            title="Filtrar Vendedor"
+                                        >
+                                            <Filter className="h-3.5 w-3.5" />
+                                        </button>
+                                    </div>
+                                </th>
+                                <th>
+                                    <div className="flex items-center gap-1 select-none">
+                                        <span title="Quem lançou ou gerou o contrato no sistema">
+                                            Usuário de lançamento
+                                        </span>
+                                        <button
+                                            onClick={(e) => handleOpenFilterMenu('usuario_lancamento', e)}
+                                            className={`p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors ${
+                                                columnFilters.usuario_lancamento.length > 0
+                                                    ? 'text-blue-600 bg-blue-50 ring-1 ring-blue-100'
+                                                    : 'text-gray-400 hover:text-gray-600'
+                                            }`}
+                                            title="Filtrar Usuário de lançamento"
+                                        >
+                                            <Filter className="h-3.5 w-3.5" />
+                                        </button>
+                                    </div>
+                                </th>
                                 <th className="text-center">
                                     <div className="flex items-center justify-center gap-1 select-none mx-auto w-fit">
                                         <span>Status</span>
@@ -670,7 +759,7 @@ export const ContratosList: React.FC = () => {
                         <tbody>
                             {aguardandoGrupoParaVisaoTodas ? (
                                 <tr>
-                                    <td colSpan={8} className="py-8 text-center text-gray-500">
+                                    <td colSpan={10} className="py-8 text-center text-gray-500">
                                         <div className="flex items-center justify-center gap-2">
                                             <RefreshCw className="h-4 w-4 animate-spin" />
                                             Carregando empresas do grupo...
@@ -679,7 +768,7 @@ export const ContratosList: React.FC = () => {
                                 </tr>
                             ) : loadingAssinaturas && filtered.length === 0 ? (
                                 <tr>
-                                    <td colSpan={8} className="py-8 text-center text-gray-500">
+                                    <td colSpan={10} className="py-8 text-center text-gray-500">
                                         <div className="flex items-center justify-center gap-2">
                                             <RefreshCw className="h-4 w-4 animate-spin" />
                                             Carregando contratos...
@@ -688,7 +777,7 @@ export const ContratosList: React.FC = () => {
                                 </tr>
                             ) : filtered.length === 0 ? (
                                 <tr>
-                                    <td colSpan={8} className="py-8 text-center text-gray-500">
+                                    <td colSpan={10} className="py-8 text-center text-gray-500">
                                         Nenhum contrato encontrado.
                                     </td>
                                 </tr>
@@ -779,6 +868,18 @@ export const ContratosList: React.FC = () => {
                                             </td>
                                             <td className="text-right font-medium text-gray-900 dark:text-slate-100">
                                                 {formatMoney(contrato.valor_mensal_centavos)}
+                                            </td>
+                                            <td
+                                                className="text-xs text-gray-700 max-w-[140px] truncate"
+                                                title={contrato.vendedor_nome || undefined}
+                                            >
+                                                {contrato.vendedor_nome || '—'}
+                                            </td>
+                                            <td
+                                                className="text-xs text-gray-700 max-w-[160px] truncate"
+                                                title={contrato.usuario_lancamento_nome || undefined}
+                                            >
+                                                {contrato.usuario_lancamento_nome || '—'}
                                             </td>
                                             <td className="text-center">
                                                 {getStatusBadge(contrato.status)}
@@ -937,7 +1038,7 @@ export const ContratosList: React.FC = () => {
                             />
                         </div>
                         <div className="flex-1 overflow-y-auto space-y-1 py-1 max-h-48 border-t border-gray-100 dark:border-gray-800">
-                            {getUniqueValuesForColumn(filterMenuColumn as 'status' | 'plano')
+                            {getUniqueValuesForColumn(filterMenuColumn as ColumnFilterKey)
                                 .filter((val) => !dropdownSearch || (filterMenuColumn === 'status' ? STATUS_FRIENDLY[val] || val : val).toLowerCase().includes(dropdownSearch.toLowerCase()))
                                 .map((val) => {
                                     const label = filterMenuColumn === 'status' ? (STATUS_FRIENDLY[val] || val) : val;
@@ -950,7 +1051,7 @@ export const ContratosList: React.FC = () => {
                                             <input
                                                 type="checkbox"
                                                 checked={isChecked}
-                                                onChange={() => handleToggleColumnFilter(filterMenuColumn as 'status' | 'plano', val)}
+                                                onChange={() => handleToggleColumnFilter(filterMenuColumn as ColumnFilterKey, val)}
                                                 className="rounded border-gray-300 dark:border-gray-700 text-blue-600 focus:ring-blue-500 h-3.5 w-3.5 cursor-pointer"
                                             />
                                             <span className="truncate">{label}</span>

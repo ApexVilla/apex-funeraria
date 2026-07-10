@@ -2,13 +2,15 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
     Fuel, Plus, Search, RefreshCw, Edit3, TrendingUp, TrendingDown,
-    Car, Users, Calendar, DollarSign, Droplets
+    Car, Users, Calendar, Droplets, FileText, BarChart2, ListChecks
 } from 'lucide-react';
 import { PageHeader } from '../../components/common/PageHeader';
 import { Button, Input, Select, Card, DropdownMenuContent, DropdownMenuItem } from '../../components/ui/Components';
 import { useFrotaEmpresaContext } from '../../lib/useFrotaEmpresaContext';
 import { useToast } from '../../lib/ToastStore';
 import { frotaListAbastecimentos } from '../../lib/frotaSupabase';
+import { RequisicoesAbastecimentoTab } from './RequisicoesAbastecimentoTab';
+import { AbastecimentoAnaliseTab } from './AbastecimentoAnaliseTab';
 
 interface Abastecimento {
     id: string;
@@ -46,6 +48,7 @@ export const AbastecimentosList: React.FC = () => {
     const [selectedId, setSelectedId] = useState<string | null>(null);
     const [openMenuId, setOpenMenuId] = useState<string | null>(null);
     const [menuPosition, setMenuPosition] = useState<{ x: number; y: number } | null>(null);
+    const [aba, setAba] = useState<'lancamentos' | 'requisicoes' | 'analise'>('lancamentos');
 
     const loadAbastecimentos = async () => {
         if (!empresaIdEfetivo) return;
@@ -154,17 +157,53 @@ export const AbastecimentosList: React.FC = () => {
         <div className="space-y-6">
             <PageHeader
                 title="Abastecimentos"
-                subtitle="Controle de combustível, consumo e gastos por veículo"
+                subtitle="Controle de combustível, requisições, consumo e gastos por veículo"
                 backTo="/frota"
                 accentColor="#be123c"
                 icon={<Fuel className="h-5 w-5 text-rose-650" />}
                 actionButton={
-                    <Button onClick={() => navigate('/frota/abastecimentos/novo')}>
-                        <Plus className="h-4 w-4 mr-2" /> Registrar Abastecimento
-                    </Button>
+                    aba === 'lancamentos' ? (
+                        <Button onClick={() => navigate('/frota/abastecimentos/novo')}>
+                            <Plus className="h-4 w-4 mr-2" /> Registrar Abastecimento
+                        </Button>
+                    ) : undefined
                 }
             />
 
+            {/* Abas */}
+            <div className="flex gap-1 p-1 bg-gray-100 dark:bg-slate-800 rounded-xl w-full sm:w-fit overflow-x-auto">
+                {([
+                    { id: 'lancamentos', label: 'Lançamentos', icon: ListChecks },
+                    { id: 'requisicoes', label: 'Requisições', icon: FileText },
+                    { id: 'analise', label: 'Análise & Gráficos', icon: BarChart2 },
+                ] as const).map(t => {
+                    const Icon = t.icon;
+                    const ativa = aba === t.id;
+                    return (
+                        <button
+                            key={t.id}
+                            type="button"
+                            onClick={() => setAba(t.id)}
+                            className={`flex items-center gap-2 px-4 h-9 rounded-lg text-sm font-semibold whitespace-nowrap transition-all ${
+                                ativa
+                                    ? 'bg-white dark:bg-slate-900 text-rose-700 dark:text-rose-400 shadow-sm'
+                                    : 'text-gray-500 dark:text-slate-400 hover:text-gray-800 dark:hover:text-slate-200'
+                            }`}
+                        >
+                            <Icon className="h-4 w-4" />
+                            {t.label}
+                        </button>
+                    );
+                })}
+            </div>
+
+            {aba === 'requisicoes' && (
+                <RequisicoesAbastecimentoTab onBaixaRealizada={() => { void loadAbastecimentos(); }} />
+            )}
+
+            {aba === 'analise' && <AbastecimentoAnaliseTab />}
+
+            {aba === 'lancamentos' && (<>
             {/* Stats */}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 <Card className="p-4 bg-blue-50">
@@ -419,6 +458,7 @@ export const AbastecimentosList: React.FC = () => {
                 </div>
             </Card>
             {loading && <div className="text-sm text-gray-500">Carregando...</div>}
+            </>)}
         </div>
     );
 };

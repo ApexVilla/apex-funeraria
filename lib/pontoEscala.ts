@@ -134,11 +134,12 @@ export function metaMinutosNoDia(
     if (isDomingoLocal(dataISO)) return 0;
     if (isSabadoLocal(dataISO)) {
       if (temBatida) {
-        // Sábado com batida: plantão/jornada normal (meta do sábado, não hora extra integral)
+        // Plantão / sábado de trabalho: meta do sábado (4h no regime 8h).
         if (!temEscalaSabadoAlternado(config) || isSabadoTrabalhoEscala(config, dataISO)) {
           return metaSabadoEfetiva(config);
         }
-        return metaSabadoMinutos(config);
+        // Sábado de folga da escala com batida = hora extra integral (meta zero).
+        return 0;
       }
       if (temEscalaSabadoAlternado(config) && isSabadoTrabalhoEscala(config, dataISO)) {
         return metaSabadoEfetiva(config);
@@ -153,8 +154,26 @@ export function metaMinutosNoDia(
     return temBatida ? config.carga_horaria_minutos : 0;
   }
 
+  // Regime 8h / personalizado: sábado trabalhado = meta 4h (nunca 8h).
+  // Sem batida = folga (não falta). Horas além da meta entram no saldo.
+  if (isSabadoLocal(dataISO) && (config.regime === 'padrao_8h' || config.regime === 'personalizado')) {
+    return temBatida ? metaSabadoMinutos(config) : 0;
+  }
+
   if (isFimDeSemanaLocal(dataISO)) return 0;
 
+  return config.carga_horaria_minutos;
+}
+
+/**
+ * Meta ao forçar "jornada normal" num dia (ex.: folga de escala).
+ * Sábado usa 4h no regime 8h — nunca a carga de dia útil (8h).
+ */
+export function metaMinutosJornadaNormalForcada(config: PontoConfig, dataISO: string): number {
+  if (isSabadoLocal(dataISO)) {
+    if (config.regime === 'seis_horas') return config.carga_horaria_minutos;
+    return metaSabadoMinutos(config);
+  }
   return config.carga_horaria_minutos;
 }
 
@@ -191,8 +210,15 @@ export function isDiaHoraExtra(
 ): boolean {
   if (!temBatida) return false;
   if (isSabadoTrabalhoEscala(config, dataISO)) return false;
-  if (config.regime === 'seis_horas' && isSabadoLocal(dataISO) && !temEscalaSabadoAlternado(config)) {
-    return false;
+  // Sábado com meta própria (4h no 8h / carga no 6h) — saldo diário, não HE integral.
+  if (isSabadoLocal(dataISO) && !temEscalaSabadoAlternado(config)) {
+    if (
+      config.regime === 'seis_horas' ||
+      config.regime === 'padrao_8h' ||
+      config.regime === 'personalizado'
+    ) {
+      return false;
+    }
   }
   if (isDiaExtra12x36(config, dataISO, temBatida)) return true;
   if (isSabadoFolgaEscala(config, dataISO)) return true;

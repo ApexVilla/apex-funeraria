@@ -1,5 +1,5 @@
 import { supabase } from './supabase';
-import { dataHojeIsoLocal } from './contratoDatas';
+import { dataHojeIsoLocal, dataIsoLocalFromDate } from './contratoDatas';
 
 const LOTE_MENSALIDADES = 12;
 const MAX_LOTES_SINCRONIZACAO = 24;
@@ -14,6 +14,88 @@ function fimMesAtualIso(): string {
     const last = new Date(y, m + 1, 0).getDate();
     const mm = String(m + 1).padStart(2, '0');
     return `${y}-${mm}-${String(last).padStart(2, '0')}`;
+}
+
+/** YYYY-MM a partir de data ISO (competência ou vencimento). */
+export function mesReferenciaYm(iso?: string | null): string {
+    const s = String(iso || '').slice(0, 10);
+    return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s.slice(0, 7) : '';
+}
+
+/**
+ * Vencimento no mês (YYYY-MM) com o dia fixo da assinatura,
+ * travado no último dia do mês quando o dia não existe (ex.: 31 → 28/29 fev).
+ */
+export function vencimentoMensalidadeNoMes(ym: string, diaVencimento: number): string {
+    const m = String(ym || '').slice(0, 7);
+    if (!/^\d{4}-\d{2}$/.test(m)) return dataHojeIsoLocal();
+    const [yStr, mStr] = m.split('-');
+    const y = parseInt(yStr, 10);
+    const monthIndex = parseInt(mStr, 10) - 1;
+    const alvo = Math.max(1, Math.min(31, Math.floor(diaVencimento) || 5));
+    const last = new Date(y, monthIndex + 1, 0).getDate();
+    return dataIsoLocalFromDate(new Date(y, monthIndex, Math.min(alvo, last), 12, 0, 0, 0));
+}
+
+/** Meses (YYYY-MM) já ocupados por mensalidades ativas da assinatura. */
+export async function listarMesesMensalidadeOcupados(assinaturaId: string): Promise<Set<string>> {
+    const { data, error } = await supabase
+        .from('fin_contas_receber')
+        .select('data_competencia, data_vencimento')
+        .eq('assinatura_id', assinaturaId)
+        .eq('tipo_documento', 'mensalidade')
+        .is('deleted_at', null);
+    if (error) throw error;
+
+    const meses = new Set<string>();
+    for (const row of data || []) {
+        // Mês canônico = vencimento (competência desalinhada não deve liberar duplicata).
+        const ym =
+            mesReferenciaYm(row.data_vencimento as string) ||
+            mesReferenciaYm(row.data_competencia as string);
+        if (ym) meses.add(ym);
+    }
+    return meses;
+}
+
+/** Primeiro buraco (mês faltante) entre o menor e o maior mês ocupado; senão o mês atual se livre. */
+export function sugerirMesMensalidadeFaltante(ocupados: Set<string>, hojeYm?: string): string {
+    const atual = hojeYm || dataHojeIsoLocal().slice(0, 7);
+    if (ocupados.size === 0) return atual;
+
+    const ordenados = [...ocupados].sort();
+    const primeiro = ordenados[0];
+    const ultimo = ordenados[ordenados.length - 1];
+
+    let cur = primeiro;
+    while (cur <= ultimo) {
+        if (!ocupados.has(cur)) return cur;
+        const [y, m] = cur.split('-').map(Number);
+        const d = new Date(y, m, 1); // avança 1 mês (m já é 1-based → Date usa m como próximo)
+        cur = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    }
+
+    if (!ocupados.has(atual)) return atual;
+    return atual;
+}
+
+/** Garante que o mês ainda não tem mensalidade (para create manual / RPC). */
+export async function assertMesMensalidadeLivre(
+    assinaturaId: string,
+    mesYm: string,
+): Promise<void> {
+    const ym = String(mesYm || '').slice(0, 7);
+    if (!/^\d{4}-\d{2}$/.test(ym)) {
+        throw new Error('Mês de competência inválido.');
+    }
+    const ocupados = await listarMesesMensalidadeOcupados(assinaturaId);
+    if (ocupados.has(ym)) {
+        const [y, m] = ym.split('-');
+        const label = `${m}/${y}`;
+        throw new Error(
+            `Já existe mensalidade para ${label} neste contrato. Exclua a parcela desse mês para recriá-la — não é permitido duplicar o mesmo mês.`,
+        );
+    }
 }
 
 async function contarParcelasEmAberto(assinaturaId: string): Promise<number> {
